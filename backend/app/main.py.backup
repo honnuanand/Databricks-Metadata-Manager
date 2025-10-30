@@ -1,0 +1,1432 @@
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from app.core.config import settings
+from app.api.endpoints import auth, catalogs
+from app.api.dependencies.auth import get_current_active_user
+from app.core.databricks_client import databricks_manager
+from app.schemas.user import User
+import logging
+import os
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Create FastAPI app
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    debug=settings.DEBUG,
+    description="Clean API-driven Databricks Metadata Manager"
+)
+
+# Log configuration on startup
+logger.info(f"SECRET_KEY configured: {settings.SECRET_KEY[:16]}...")
+logger.info(f"DATABRICKS_HOST: {settings.DATABRICKS_HOST}")
+logger.info(f"CORS_ORIGINS: {settings.CORS_ORIGINS}")
+
+# Database initialization on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database with seed data if needed"""
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+        from app.core.security import get_password_hash
+        from datetime import datetime, timezone
+
+        logger.info("Checking database initialization...")
+
+        engine = create_engine(
+            settings.DATABASE_URL,
+            poolclass=NullPool,
+            connect_args={"connect_timeout": 10}
+        )
+
+        with engine.connect() as conn:
+            # Check if users exist
+            result = conn.execute(text("SELECT COUNT(*) FROM users"))
+            user_count = result.scalar()
+
+            if user_count == 0:
+                logger.info("Database is empty. Seeding with initial users...")
+
+                # Create admin user with FIXED UUID
+                admin_id = "00000000-0000-0000-0000-000000000001"
+                admin_password = get_password_hash("admin123")
+
+                conn.execute(text("""
+                    INSERT INTO users (id, email, username, full_name, hashed_password, role, is_active, is_superuser, created_at, updated_at)
+                    VALUES (:id, :email, :username, :full_name, :hashed_password, :role, :is_active, :is_superuser, :created_at, :updated_at)
+                """), {
+                    "id": admin_id,
+                    "email": "admin@example.com",
+                    "username": "admin",
+                    "full_name": "Admin User",
+                    "hashed_password": admin_password,
+                    "role": "ADMIN",
+                    "is_active": True,
+                    "is_superuser": True,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc)
+                })
+
+                # Create approver user with FIXED UUID
+                approver_id = "00000000-0000-0000-0000-000000000002"
+                approver_password = get_password_hash("approver123")
+
+                conn.execute(text("""
+                    INSERT INTO users (id, email, username, full_name, hashed_password, role, is_active, is_superuser, created_at, updated_at)
+                    VALUES (:id, :email, :username, :full_name, :hashed_password, :role, :is_active, :is_superuser, :created_at, :updated_at)
+                """), {
+                    "id": approver_id,
+                    "email": "approver@example.com",
+                    "username": "approver",
+                    "full_name": "Approver User",
+                    "hashed_password": approver_password,
+                    "role": "APPROVER",
+                    "is_active": True,
+                    "is_superuser": False,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc)
+                })
+
+                # Create regular user with FIXED UUID
+                user_id = "00000000-0000-0000-0000-000000000003"
+                user_password = get_password_hash("user123")
+
+                conn.execute(text("""
+                    INSERT INTO users (id, email, username, full_name, hashed_password, role, is_active, is_superuser, created_at, updated_at)
+                    VALUES (:id, :email, :username, :full_name, :hashed_password, :role, :is_active, :is_superuser, :created_at, :updated_at)
+                """), {
+                    "id": user_id,
+                    "email": "user@example.com",
+                    "username": "testuser",
+                    "full_name": "Test User",
+                    "hashed_password": user_password,
+                    "role": "SUGGEST_ONLY",
+                    "is_active": True,
+                    "is_superuser": False,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc)
+                })
+
+                conn.commit()
+                logger.info("✅ Database seeded with 3 users (fixed UUIDs)")
+            else:
+                logger.info(f"Database already has {user_count} users. Skipping seed.")
+
+    except Exception as e:
+        logger.error(f"Error during database initialization: {e}", exc_info=True)
+
+# In-memory storage for comments (for development/testing)
+comments_storage = [
+    {
+        "id": "comment_001",
+        "entity_type": "column",
+        "entity_catalog": "arao",
+        "entity_schema": "metadata_test",
+        "entity_table": "users",
+        "entity_column": "email",
+        "entity_path": "arao.metadata_test.users.email",
+        "current_comment": "User email address",
+        "suggested_comment": "Primary email address for user communication and authentication",
+        "status": "pending",
+        "created_by": "john_suggest",
+        "created_at": "2024-01-15T10:30:00Z"
+    },
+    {
+        "id": "comment_002",
+        "entity_type": "table",
+        "entity_catalog": "arao",
+        "entity_schema": "metadata_test", 
+        "entity_table": "users",
+        "entity_path": "arao.metadata_test.users",
+        "current_comment": None,
+        "suggested_comment": "Core user information table containing authentication and profile data",
+        "status": "draft",
+        "created_by": "alice_suggest",
+        "created_at": "2024-01-15T11:15:00Z"
+    },
+    {
+        "id": "comment_003",
+        "entity_type": "column",
+        "entity_catalog": "arao",
+        "entity_schema": "metadata_test",
+        "entity_table": "products",
+        "entity_column": "price",
+        "entity_path": "arao.metadata_test.products.price",
+        "current_comment": "Product price",
+        "suggested_comment": "Product price in USD with 2 decimal precision",
+        "status": "pending",
+        "created_by": "john_suggest",
+        "created_at": "2024-01-15T12:00:00Z"
+    },
+    {
+        "id": "comment_004",
+        "entity_type": "schema",
+        "entity_catalog": "arao",
+        "entity_schema": "metadata_test",
+        "entity_path": "arao.metadata_test",
+        "current_comment": "Test schema with sample tables and comprehensive metadata",
+        "suggested_comment": "Comprehensive test environment with sample business data for metadata management development and testing",
+        "status": "pending",
+        "created_by": "john_suggest",
+        "created_at": "2024-01-15T13:00:00Z"
+    },
+    {
+        "id": "comment_005",
+        "entity_type": "schema", 
+        "entity_catalog": "arao",
+        "entity_schema": "metadata_manager",
+        "entity_path": "arao.metadata_manager",
+        "current_comment": "Central repository for Databricks metadata management",
+        "suggested_comment": "Production schema for Databricks Unity Catalog metadata management with audit trails and approval workflows",
+        "status": "approved",
+        "created_by": "alice_suggest",
+        "created_at": "2024-01-15T14:00:00Z",
+        "approved_by": "jane_approver",
+        "approved_at": "2024-01-15T15:00:00Z"
+    }
+]
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Get the directory where this file is located
+BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / "static"
+
+# Mount static files if the directory exists
+if STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+    logger.info(f"Mounted static files from {STATIC_DIR}")
+else:
+    logger.warning(f"Static directory not found at {STATIC_DIR}")
+
+# Include routers
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
+app.include_router(catalogs.router, prefix="/api/v1/catalogs", tags=["Catalogs"])
+
+# Add users endpoint for frontend compatibility  
+@app.get("/api/v1/users/me")
+async def get_current_user_info_compat(current_user: User = Depends(get_current_active_user)):
+    """Get current user information - compatibility endpoint"""
+    from app.services.user_service import user_service
+    
+    try:
+        permissions = await user_service.get_user_permissions(current_user)
+        
+        return {
+            "id": current_user.user_id,
+            "email": current_user.email,
+            "username": current_user.username,
+            "full_name": current_user.full_name,
+            "role": current_user.role,
+            "is_active": current_user.is_active,
+            "permissions": permissions
+        }
+    except Exception as e:
+        logger.error(f"Error getting user info: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+# Add comments endpoints
+@app.get("/api/v1/comments")
+async def list_catalogs():
+    """List available catalogs"""
+    from app.services.catalog_service import catalog_service
+    try:
+        # For now, use a default user ID until we implement proper authentication
+        user_id = "system_user"
+        catalogs = await catalog_service.list_accessible_catalogs(user_id)
+        
+        # Convert to the format expected by the frontend
+        return [
+            {
+                "name": catalog.name,
+                "comment": catalog.comment,
+                "schemas_count": 0,  # Could be calculated if needed
+                "last_updated": catalog.updated_at or catalog.created_at
+            }
+            for catalog in catalogs
+        ]
+    except Exception as e:
+        logger.error(f"Error listing catalogs: {e}")
+        # Fallback to mock data if Databricks is not available
+        return [
+            {
+                "name": "arao",
+                "comment": "Main catalog for Anand Rao's workspace",
+                "schemas_count": 2,
+                "last_updated": "2025-09-10T20:00:00Z"
+            }
+        ]
+
+@app.get("/api/v1/catalogs/{catalog}/schemas")
+async def list_schemas(catalog: str):
+    """List schemas in a catalog"""
+    from app.services.catalog_service import catalog_service
+    try:
+        user_id = "system_user"
+        schemas = await catalog_service.list_schemas_in_catalog(catalog, user_id)
+        
+        # Convert to the format expected by the frontend
+        return [
+            {
+                "name": schema.name,
+                "catalog_name": schema.catalog_name,
+                "comment": schema.comment,
+                "tables_count": 0,  # Could be calculated if needed
+                "last_updated": schema.updated_at or schema.created_at
+            }
+            for schema in schemas
+        ]
+    except Exception as e:
+        logger.error(f"Error listing schemas for catalog {catalog}: {e}")
+        # Fallback to mock data if Databricks is not available
+        if catalog == "arao":
+            return [
+                {
+                    "name": "metadata_manager",
+                    "catalog_name": catalog,
+                    "comment": "Central repository for Databricks metadata management",
+                    "tables_count": 4,
+                    "last_updated": "2025-09-10T20:00:00Z"
+                },
+                {
+                    "name": "metadata_test",
+                    "catalog_name": catalog,
+                    "comment": "Test schema with sample tables and comprehensive metadata",
+                    "tables_count": 8,
+                    "last_updated": "2025-09-10T20:30:00Z"
+                }
+            ]
+        return []
+
+@app.get("/api/v1/catalogs/{catalog}/{schema}/tables")
+async def list_tables(catalog: str, schema: str):
+    """List tables in a schema"""
+    from app.services.catalog_service import catalog_service
+    try:
+        user_id = "system_user"
+        tables = await catalog_service.list_tables_in_schema(catalog, schema, user_id)
+        
+        # Convert to the format expected by the frontend
+        return [
+            {
+                "name": table.name,
+                "catalog_name": table.catalog_name,
+                "schema_name": table.schema_name,
+                "comment": table.comment,
+                "column_count": 0,  # Could get actual count by querying columns
+                "table_type": table.table_type,
+                "last_updated": table.updated_at or table.created_at
+            }
+            for table in tables
+        ]
+    except Exception as e:
+        logger.error(f"Error listing tables for {catalog}.{schema}: {e}")
+        # Fallback to mock data if Databricks is not available
+        if catalog == "arao" and schema == "metadata_test":
+            return [
+                {
+                    "name": "users",
+                    "catalog_name": catalog,
+                    "schema_name": schema,
+                    "comment": "Customer information and profile data",
+                    "column_count": 15,
+                    "table_type": "MANAGED",
+                    "last_updated": "2025-09-10T20:30:00Z"
+                },
+                {
+                    "name": "products", 
+                    "catalog_name": catalog,
+                    "schema_name": schema,
+                    "comment": "Product catalog with detailed item specifications and inventory",
+                    "column_count": 18,
+                    "table_type": "MANAGED",
+                    "last_updated": "2025-09-10T20:30:00Z"
+                },
+                {
+                    "name": "orders",
+                    "catalog_name": catalog,
+                    "schema_name": schema,
+                    "comment": "Customer orders with payment and shipping details", 
+                    "column_count": 16,
+                    "table_type": "MANAGED",
+                    "last_updated": "2025-09-10T20:30:00Z"
+                }
+            ]
+        elif catalog == "arao" and schema == "metadata_manager":
+            return [
+                {
+                    "name": "users",
+                    "catalog_name": catalog,
+                    "schema_name": schema,
+                    "comment": "System users with role-based access for metadata management",
+                    "column_count": 8,
+                    "table_type": "MANAGED",
+                    "last_updated": "2025-09-10T19:00:00Z"
+                }
+            ]
+        return []
+
+@app.get("/api/v1/catalogs/{catalog}/{schema}/{table}/columns")
+async def list_table_columns(catalog: str, schema: str, table: str):
+    """List columns in a table with comprehensive metadata"""
+    from app.services.catalog_service import catalog_service
+    try:
+        user_id = "system_user"
+        columns = await catalog_service.get_table_columns(catalog, schema, table, user_id)
+        
+        # Convert to the format expected by the frontend
+        return [
+            {
+                "name": column.name,
+                "data_type": column.data_type,
+                "comment": column.comment,
+                "nullable": column.nullable,
+                "position": column.position,
+                "precision": None,  # Could be extracted from data_type if needed
+                "scale": None,      # Could be extracted from data_type if needed
+                "max_length": None, # Could be extracted from data_type if needed
+                "default_value": None,
+                "is_partition_key": column.partition_index is not None,
+                "is_primary_key": False  # Would need additional logic to determine
+            }
+            for column in columns
+        ]
+    except Exception as e:
+        logger.error(f"Error getting columns for {catalog}.{schema}.{table}: {e}")
+        # Fallback to mock data if Databricks is not available
+        if catalog == "arao" and schema == "metadata_test" and table == "users":
+            return [
+            {
+                "name": "user_id",
+                "data_type": "BIGINT",
+                "comment": "Unique identifier for each user",
+                "nullable": False,
+                "position": 1,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": True
+            },
+            {
+                "name": "email", 
+                "data_type": "STRING",
+                "comment": "User email address for login and notifications",
+                "nullable": False,
+                "position": 2,
+                "precision": None,
+                "scale": None,
+                "max_length": 255,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "first_name",
+                "data_type": "STRING", 
+                "comment": "User first name",
+                "nullable": True,
+                "position": 3,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "last_name",
+                "data_type": "STRING",
+                "comment": "User last name", 
+                "nullable": True,
+                "position": 4,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "phone",
+                "data_type": "STRING",
+                "comment": "User phone number for contact",
+                "nullable": True,
+                "position": 5,
+                "precision": None,
+                "scale": None,
+                "max_length": 20,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "address",
+                "data_type": "STRING",
+                "comment": "User billing address",
+                "nullable": True,
+                "position": 6,
+                "precision": None,
+                "scale": None,
+                "max_length": 500,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "city",
+                "data_type": "STRING",
+                "comment": "User city",
+                "nullable": True,
+                "position": 7,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "state",
+                "data_type": "STRING",
+                "comment": "User state or province",
+                "nullable": True,
+                "position": 8,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "zip_code",
+                "data_type": "STRING",
+                "comment": "User postal/zip code",
+                "nullable": True,
+                "position": 9,
+                "precision": None,
+                "scale": None,
+                "max_length": 20,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "country",
+                "data_type": "STRING",
+                "comment": "User country",
+                "nullable": True,
+                "position": 10,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "registration_date",
+                "data_type": "DATE",
+                "comment": "Date when user registered",
+                "nullable": True,
+                "position": 11,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "last_login",
+                "data_type": "TIMESTAMP",
+                "comment": "Timestamp of users last login",
+                "nullable": True,
+                "position": 12,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "is_active",
+                "data_type": "BOOLEAN",
+                "comment": "Whether user account is active",
+                "nullable": True,
+                "position": 13,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": "true",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "total_orders",
+                "data_type": "INT",
+                "comment": "Total number of orders placed by user",
+                "nullable": True,
+                "position": 14,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": "0",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "total_spent",
+                "data_type": "DECIMAL",
+                "comment": "Total amount spent by user",
+                "nullable": True,
+                "position": 15,
+                "precision": 10,
+                "scale": 2,
+                "max_length": None,
+                "default_value": "0.00",
+                "is_partition_key": False,
+                "is_primary_key": False
+            }
+        ]
+        elif catalog == "arao" and schema == "metadata_test" and table == "products":
+            return [
+            {
+                "name": "product_id",
+                "data_type": "BIGINT",
+                "comment": "Unique product identifier",
+                "nullable": False,
+                "position": 1,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": True
+            },
+            {
+                "name": "sku",
+                "data_type": "STRING",
+                "comment": "Stock keeping unit - unique product code",
+                "nullable": False,
+                "position": 2,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "product_name",
+                "data_type": "STRING",
+                "comment": "Display name of the product",
+                "nullable": False,
+                "position": 3,
+                "precision": None,
+                "scale": None,
+                "max_length": 255,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "category",
+                "data_type": "STRING",
+                "comment": "Product category (Electronics, Clothing, etc.)",
+                "nullable": True,
+                "position": 4,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "subcategory",
+                "data_type": "STRING",
+                "comment": "Product subcategory for finer classification",
+                "nullable": True,
+                "position": 5,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "brand",
+                "data_type": "STRING",
+                "comment": "Brand or manufacturer name",
+                "nullable": True,
+                "position": 6,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "description",
+                "data_type": "STRING",
+                "comment": "Detailed product description",
+                "nullable": True,
+                "position": 7,
+                "precision": None,
+                "scale": None,
+                "max_length": 2000,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "price",
+                "data_type": "DECIMAL",
+                "comment": "Current selling price of the product",
+                "nullable": False,
+                "position": 8,
+                "precision": 10,
+                "scale": 2,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "cost",
+                "data_type": "DECIMAL",
+                "comment": "Cost to acquire/manufacture the product",
+                "nullable": True,
+                "position": 9,
+                "precision": 10,
+                "scale": 2,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "weight",
+                "data_type": "DECIMAL",
+                "comment": "Product weight in pounds",
+                "nullable": True,
+                "position": 10,
+                "precision": 8,
+                "scale": 3,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "dimensions",
+                "data_type": "STRING",
+                "comment": "Product dimensions (LxWxH)",
+                "nullable": True,
+                "position": 11,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "color",
+                "data_type": "STRING",
+                "comment": "Primary color of the product",
+                "nullable": True,
+                "position": 12,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "size",
+                "data_type": "STRING",
+                "comment": "Size specification (S/M/L, numeric, etc.)",
+                "nullable": True,
+                "position": 13,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "inventory_count",
+                "data_type": "INT",
+                "comment": "Current stock level",
+                "nullable": True,
+                "position": 14,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": "0",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "reorder_level",
+                "data_type": "INT",
+                "comment": "Minimum stock level before reordering",
+                "nullable": True,
+                "position": 15,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": "10",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "supplier_id",
+                "data_type": "INT",
+                "comment": "Reference to supplier providing this product",
+                "nullable": True,
+                "position": 16,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "created_date",
+                "data_type": "DATE",
+                "comment": "Date product was added to catalog",
+                "nullable": True,
+                "position": 17,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "last_updated",
+                "data_type": "TIMESTAMP",
+                "comment": "Last time product info was updated",
+                "nullable": True,
+                "position": 18,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "is_active",
+                "data_type": "BOOLEAN",
+                "comment": "Whether product is currently available for sale",
+                "nullable": True,
+                "position": 19,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": "true",
+                "is_partition_key": False,
+                "is_primary_key": False
+            }
+        ]
+        elif catalog == "arao" and schema == "metadata_test" and table == "orders":
+            return [
+            {
+                "name": "order_id",
+                "data_type": "BIGINT",
+                "comment": "Unique order identifier",
+                "nullable": False,
+                "position": 1,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": True
+            },
+            {
+                "name": "user_id",
+                "data_type": "BIGINT",
+                "comment": "Reference to user who placed the order",
+                "nullable": False,
+                "position": 2,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": True,
+                "is_primary_key": False
+            },
+            {
+                "name": "order_date",
+                "data_type": "TIMESTAMP",
+                "comment": "When the order was placed",
+                "nullable": False,
+                "position": 3,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "order_status",
+                "data_type": "STRING",
+                "comment": "Current status: pending, processing, shipped, delivered, cancelled",
+                "nullable": False,
+                "position": 4,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": "pending",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "payment_method",
+                "data_type": "STRING",
+                "comment": "How customer paid: credit_card, paypal, bank_transfer",
+                "nullable": True,
+                "position": 5,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "payment_status",
+                "data_type": "STRING",
+                "comment": "Payment status: pending, completed, failed, refunded",
+                "nullable": False,
+                "position": 6,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": "pending",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "subtotal",
+                "data_type": "DECIMAL",
+                "comment": "Order subtotal before taxes and shipping",
+                "nullable": False,
+                "position": 7,
+                "precision": 10,
+                "scale": 2,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "tax_amount",
+                "data_type": "DECIMAL",
+                "comment": "Total tax amount charged",
+                "nullable": True,
+                "position": 8,
+                "precision": 8,
+                "scale": 2,
+                "max_length": None,
+                "default_value": "0.00",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "shipping_cost",
+                "data_type": "DECIMAL",
+                "comment": "Shipping and handling charges",
+                "nullable": True,
+                "position": 9,
+                "precision": 8,
+                "scale": 2,
+                "max_length": None,
+                "default_value": "0.00",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "discount_amount",
+                "data_type": "DECIMAL",
+                "comment": "Total discounts applied",
+                "nullable": True,
+                "position": 10,
+                "precision": 8,
+                "scale": 2,
+                "max_length": None,
+                "default_value": "0.00",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "total_amount",
+                "data_type": "DECIMAL",
+                "comment": "Final total amount charged",
+                "nullable": False,
+                "position": 11,
+                "precision": 10,
+                "scale": 2,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "shipping_address",
+                "data_type": "STRING",
+                "comment": "Address where order should be shipped",
+                "nullable": True,
+                "position": 12,
+                "precision": None,
+                "scale": None,
+                "max_length": 500,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "billing_address",
+                "data_type": "STRING",
+                "comment": "Billing address for payment",
+                "nullable": True,
+                "position": 13,
+                "precision": None,
+                "scale": None,
+                "max_length": 500,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "tracking_number",
+                "data_type": "STRING",
+                "comment": "Shipping tracking number",
+                "nullable": True,
+                "position": 14,
+                "precision": None,
+                "scale": None,
+                "max_length": 100,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "shipped_date",
+                "data_type": "DATE",
+                "comment": "Date order was shipped",
+                "nullable": True,
+                "position": 15,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "delivered_date",
+                "data_type": "DATE",
+                "comment": "Date order was delivered",
+                "nullable": True,
+                "position": 16,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "notes",
+                "data_type": "STRING",
+                "comment": "Special instructions or notes",
+                "nullable": True,
+                "position": 17,
+                "precision": None,
+                "scale": None,
+                "max_length": 1000,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            }
+        ]
+        elif catalog == "arao" and schema == "metadata_test" and table == "orders":
+            return [
+            {
+                "name": "order_id",
+                "data_type": "BIGINT",
+                "comment": "Unique order identifier",
+                "nullable": False,
+                "position": 1,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": True
+            },
+            {
+                "name": "user_id",
+                "data_type": "BIGINT",
+                "comment": "Foreign key to users table",
+                "nullable": False,
+                "position": 2,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "order_date",
+                "data_type": "TIMESTAMP",
+                "comment": "When the order was placed",
+                "nullable": False,
+                "position": 3,
+                "precision": None,
+                "scale": None,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "order_status",
+                "data_type": "STRING",
+                "comment": "Current status: pending, processing, shipped, delivered, cancelled",
+                "nullable": False,
+                "position": 4,
+                "precision": None,
+                "scale": None,
+                "max_length": 50,
+                "default_value": "pending",
+                "is_partition_key": False,
+                "is_primary_key": False
+            },
+            {
+                "name": "total_amount",
+                "data_type": "DECIMAL",
+                "comment": "Total order amount including tax and shipping",
+                "nullable": False,
+                "position": 5,
+                "precision": 10,
+                "scale": 2,
+                "max_length": None,
+                "default_value": None,
+                "is_partition_key": False,
+                "is_primary_key": False
+            }
+        ]
+    return []
+
+# Helper function to get user role from username
+def get_user_role_from_username(username: str) -> str:
+    """Get the role for a given username based on naming convention"""
+    if not username:
+        return "unknown"
+
+    # Extract role from username (e.g., john_suggest -> suggest_only, jane_approver -> approver)
+    if "_admin" in username:
+        return "admin"
+    elif "_approver" in username:
+        return "approver"
+    elif "_suggest" in username:
+        return "suggest_only"
+    else:
+        return "suggest_only"  # Default
+
+# Add comments endpoints
+@app.get("/api/v1/comments")
+async def get_all_comments(current_user: User = Depends(get_current_active_user)):
+    """Get all comments (for audit log and admin views)"""
+    # Enhance each comment with user role information
+    enhanced_comments = []
+    for comment in comments_storage:
+        enhanced_comment = comment.copy()
+        # Add the role/authorization level of the user who created/approved/applied the comment
+        enhanced_comment["created_by_role"] = get_user_role_from_username(comment.get("created_by", ""))
+        if comment.get("approved_by"):
+            enhanced_comment["approved_by_role"] = get_user_role_from_username(comment.get("approved_by"))
+        if comment.get("applied_by"):
+            enhanced_comment["applied_by_role"] = get_user_role_from_username(comment.get("applied_by"))
+        enhanced_comments.append(enhanced_comment)
+    return enhanced_comments
+
+@app.get("/api/v1/comments/my")
+async def get_my_comments():
+    """Get current user's comment suggestions"""
+    # TODO: Filter by current user when authentication is implemented
+    # For now, return all comments for development
+    return comments_storage
+
+@app.post("/api/v1/comments")
+async def create_comment(comment_data: dict):
+    """Create a new comment suggestion"""
+    import uuid
+    from datetime import datetime
+    
+    comment_id = str(uuid.uuid4())
+    current_time = datetime.now().isoformat() + "Z"
+    
+    # Build entity path
+    entity_parts = []
+    if comment_data.get("entity_catalog"):
+        entity_parts.append(comment_data.get("entity_catalog"))
+    if comment_data.get("entity_schema"):
+        entity_parts.append(comment_data.get("entity_schema"))
+    if comment_data.get("entity_table"):
+        entity_parts.append(comment_data.get("entity_table"))
+    if comment_data.get("entity_column"):
+        entity_parts.append(comment_data.get("entity_column"))
+    
+    entity_path = ".".join(entity_parts)
+    
+    # Create comment object
+    comment = {
+        "id": comment_id,
+        "entity_type": comment_data.get("entity_type", "column"),
+        "entity_catalog": comment_data.get("entity_catalog"),
+        "entity_schema": comment_data.get("entity_schema"),
+        "entity_table": comment_data.get("entity_table"),
+        "entity_column": comment_data.get("entity_column"),
+        "current_comment": comment_data.get("current_comment"),
+        "suggested_comment": comment_data.get("suggested_comment"),
+        "status": "draft",
+        "created_by": "john_suggest",  # TODO: Get from current user
+        "created_at": current_time,
+        "updated_at": current_time,
+        "entity_path": entity_path
+    }
+    
+    # Store the comment
+    comments_storage.append(comment)
+    
+    logger.info(f"Created comment {comment_id} for {entity_path}")
+    return comment
+
+@app.get("/api/v1/comments/table/{catalog}/{schema}/{table}")
+async def get_table_comments(catalog: str, schema: str, table: str):
+    """Get pending comments for a specific table"""
+    # Filter comments for this specific table
+    table_comments = []
+    for comment in comments_storage:
+        # Match by entity path for table and column level comments
+        entity_path = f"{catalog}.{schema}.{table}"
+        if (comment.get("entity_catalog") == catalog and 
+            comment.get("entity_schema") == schema and 
+            comment.get("entity_table") == table) or \
+           (comment.get("entity_path", "").startswith(entity_path)):
+            table_comments.append(comment)
+    
+    return table_comments
+
+@app.get("/api/v1/comments")
+async def list_comments():
+    """List all comments"""
+    return []
+
+@app.get("/api/v1/approvals/pending")
+async def get_pending_approvals():
+    """Get pending approvals for approvers"""
+    # Return comments that are pending approval
+    pending_comments = [comment for comment in comments_storage if comment.get("status") == "pending"]
+    return pending_comments
+
+@app.post("/api/v1/approvals/{comment_id}/approve")
+async def approve_comment(comment_id: str, feedback: str = None):
+    """Approve a comment suggestion"""
+    # Find the comment
+    comment = None
+    for c in comments_storage:
+        if c.get("id") == comment_id:
+            comment = c
+            break
+    
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    
+    # Update comment status
+    comment["status"] = "approved"
+    comment["approved_at"] = "2024-01-15T14:00:00Z"
+    comment["approved_by"] = "jane_approver"  # In real app, get from current user
+    if feedback:
+        comment["approval_feedback"] = feedback
+    
+    logger.info(f"Approved comment {comment_id}")
+    return {"message": "Comment approved successfully", "comment": comment}
+
+@app.post("/api/v1/approvals/{comment_id}/reject")
+async def reject_comment(comment_id: str, feedback: str):
+    """Reject a comment suggestion"""
+    if not feedback:
+        raise HTTPException(status_code=400, detail="Feedback is required for rejection")
+    
+    # Find the comment
+    comment = None
+    for c in comments_storage:
+        if c.get("id") == comment_id:
+            comment = c
+            break
+    
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    
+    # Update comment status
+    comment["status"] = "rejected"
+    comment["rejected_at"] = "2024-01-15T14:00:00Z"
+    comment["rejected_by"] = "jane_approver"  # In real app, get from current user
+    comment["rejection_feedback"] = feedback
+    
+    logger.info(f"Rejected comment {comment_id}")
+    return {"message": "Comment rejected successfully", "comment": comment}
+
+@app.post("/api/v1/approvals/{comment_id}/apply")
+async def apply_comment(comment_id: str):
+    """Apply an approved comment to Databricks"""
+    # Find the comment
+    comment = None
+    for c in comments_storage:
+        if c.get("id") == comment_id:
+            comment = c
+            break
+    
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    
+    if comment.get("status") != "approved":
+        raise HTTPException(status_code=400, detail="Comment must be approved before applying")
+    
+    # Update comment status
+    comment["status"] = "applied"
+    comment["applied_at"] = "2024-01-15T15:00:00Z"
+    comment["applied_by"] = "admin_user"  # In real app, get from current user
+    
+    # In a real implementation, this would update the Databricks catalog metadata
+    logger.info(f"Applied comment {comment_id} to Databricks")
+    return {"message": "Comment applied to Databricks successfully", "comment": comment}
+
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} starting up...")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info(f"{settings.APP_NAME} shutting down...")
+
+
+@app.get("/api")
+async def api_root():
+    """API information endpoint"""
+    return {
+        "name": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+        "status": "running",
+        "description": "Clean API-driven Databricks Metadata Manager",
+        "documentation": "/docs"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint with database connectivity test"""
+    # Mask DATABASE_URL for security (show only host)
+    db_url_info = "not_configured"
+    if settings.DATABASE_URL:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(settings.DATABASE_URL)
+            db_url_info = f"{parsed.scheme}://***:***@{parsed.hostname}/{parsed.path.lstrip('/')}"
+        except:
+            db_url_info = "configured_but_parse_failed"
+
+    health_status = {
+        "status": "healthy",
+        "version": settings.APP_VERSION,
+        "services": {
+            "auth_service": "available",
+            "database": "unknown"
+        },
+        "database_url_configured": bool(settings.DATABASE_URL and settings.DATABASE_URL != "postgresql://user:pass@localhost/dbname"),
+        "database_url_info": db_url_info
+    }
+
+    # Test database connectivity
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(settings.DATABASE_URL, connect_args={"connect_timeout": 5})
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT COUNT(*) FROM users"))
+            user_count = result.scalar()
+            health_status["services"]["database"] = "connected"
+            health_status["database_user_count"] = user_count
+    except Exception as e:
+        health_status["services"]["database"] = f"error: {str(e)}"
+        health_status["status"] = "degraded"
+        logger.error(f"Database health check failed: {e}")
+
+    return health_status
+
+@app.get("/")
+async def serve_react_app():
+    """Serve the React application"""
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    else:
+        return {
+            "name": settings.APP_NAME,
+            "version": settings.APP_VERSION,
+            "status": "running",
+            "message": "Frontend not built. Run 'npm run build' in the front-end directory.",
+            "documentation": "/docs"
+        }
+
+# Catch-all route for React Router (must be last)
+@app.get("/{full_path:path}")
+async def serve_react_router(full_path: str):
+    """Catch-all route to serve React app for client-side routing"""
+    # Don't catch API routes
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+
+    # Serve index.html for all other routes (React Router will handle them)
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    else:
+        raise HTTPException(status_code=404, detail="Frontend not found")

@@ -1,0 +1,854 @@
+import { useState, useEffect } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
+import { useSearchParams } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
+import {
+  Box,
+  Grid,
+  Paper,
+  Typography,
+  TextField,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
+  ListItemIcon,
+  Chip,
+  IconButton,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Alert,
+  CircularProgress,
+  Breadcrumbs,
+  Link,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Badge,
+  Tooltip,
+} from '@mui/material'
+import {
+  Folder as FolderIcon,
+  Storage as StorageIcon,
+  TableChart as TableIcon,
+  ViewColumn as ColumnIcon,
+  Comment as CommentIcon,
+  Add as AddIcon,
+  Edit as EditIcon,
+  NavigateNext as NavigateNextIcon,
+  ExpandMore as ExpandMoreIcon,
+  Schedule as PendingIcon,
+  RateReview as ReviewIcon,
+  PlayArrow as ApplyIcon,
+} from '@mui/icons-material'
+import { RootState, AppDispatch } from '../store/store'
+import {
+  fetchCatalogs,
+  fetchSchemas,
+  fetchTables,
+  fetchColumns,
+  selectCatalog,
+  selectSchema,
+  selectTable,
+} from '../store/catalogSlice'
+import { createComment } from '../store/commentSlice'
+import TableViewer from '../components/catalog/TableViewer'
+import { commentService } from '../services/comment.service'
+
+export default function CatalogExplorer() {
+  const dispatch = useDispatch<AppDispatch>()
+  const { user } = useSelector((state: RootState) => state.auth)
+  const [searchParams] = useSearchParams()
+  const {
+    catalogs,
+    schemas,
+    tables,
+    columns,
+    selectedCatalog,
+    selectedSchema,
+    selectedTable,
+    loading,
+    error,
+  } = useSelector((state: RootState) => state.catalog)
+
+  const [searchTerm, setSearchTerm] = useState('')
+  const [commentDialog, setCommentDialog] = useState(false)
+  const [selectedEntity, setSelectedEntity] = useState<any>(null)
+  const [suggestedComment, setSuggestedComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [expandedCatalogs, setExpandedCatalogs] = useState<Set<string>>(new Set())
+  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(new Set())
+  const [pendingComments, setPendingComments] = useState<any[]>([])
+  const [reviewDialog, setReviewDialog] = useState(false)
+  const [reviewingComment, setReviewingComment] = useState<any>(null)
+  const [reviewFeedback, setReviewFeedback] = useState('')
+
+  useEffect(() => {
+    dispatch(fetchCatalogs())
+  }, [dispatch])
+
+  // Fetch pending comments for approval indicators
+  useEffect(() => {
+    const fetchPendingComments = async () => {
+      try {
+        const comments = await commentService.listComments({ status: 'pending' })
+        setPendingComments(comments)
+      } catch (error) {
+        console.error('Failed to fetch pending comments:', error)
+      }
+    }
+
+    fetchPendingComments()
+  }, [])
+
+  // Handle URL parameters for direct navigation
+  useEffect(() => {
+    const catalogParam = searchParams.get('catalog')
+    const schemaParam = searchParams.get('schema')
+    const tableParam = searchParams.get('table')
+
+    const processNavigation = async () => {
+      if (catalogParam && catalogParam !== selectedCatalog) {
+        await handleSelectCatalog(catalogParam)
+      }
+      if (schemaParam && catalogParam && schemaParam !== selectedSchema && selectedCatalog === catalogParam) {
+        await handleSelectSchema(schemaParam)
+      }
+      if (tableParam && catalogParam && schemaParam && tableParam !== selectedTable && 
+          selectedCatalog === catalogParam && selectedSchema === schemaParam) {
+        await handleSelectTable(tableParam)
+      }
+    }
+
+    if (catalogParam || schemaParam || tableParam) {
+      processNavigation()
+    }
+  }, [searchParams])
+
+  // Helper functions for accordion and pending comments
+  const toggleCatalogExpansion = (catalogName: string) => {
+    setExpandedCatalogs(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(catalogName)) {
+        newSet.delete(catalogName)
+      } else {
+        newSet.add(catalogName)
+      }
+      return newSet
+    })
+  }
+
+  const toggleSchemaExpansion = (catalogName: string, schemaName: string) => {
+    const schemaKey = `${catalogName}.${schemaName}`
+    setExpandedSchemas(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(schemaKey)) {
+        newSet.delete(schemaKey)
+      } else {
+        newSet.add(schemaKey)
+      }
+      return newSet
+    })
+  }
+
+  // Fetch schemas when a catalog is expanded
+  useEffect(() => {
+    expandedCatalogs.forEach(catalogName => {
+      if (!schemas.some(s => s.catalog_name === catalogName)) {
+        dispatch(fetchSchemas({ catalog: catalogName }))
+      }
+    })
+  }, [expandedCatalogs, schemas, dispatch])
+
+  // Fetch tables when a schema is expanded
+  useEffect(() => {
+    expandedSchemas.forEach(schemaKey => {
+      const [catalogName, schemaName] = schemaKey.split('.')
+      if (!tables.some(t => t.catalog_name === catalogName && t.schema_name === schemaName)) {
+        dispatch(fetchTables({ catalog: catalogName, schema: schemaName }))
+      }
+    })
+  }, [expandedSchemas, tables, dispatch])
+
+  const getPendingCommentsCount = (entityType: string, catalog?: string, schema?: string, table?: string) => {
+    return pendingComments.filter(comment => {
+      if (comment.entity_type !== entityType) return false
+      if (catalog && comment.entity_catalog !== catalog) return false
+      if (schema && comment.entity_schema !== schema) return false
+      if (table && comment.entity_table !== table) return false
+      return true
+    }).length
+  }
+
+  const handleSchemaReview = (comment: any) => {
+    setReviewingComment(comment)
+    setReviewFeedback('')
+    setReviewDialog(true)
+  }
+
+  const handleSchemaApply = async (comment: any) => {
+    try {
+      await commentService.applyComment(comment.id)
+      // Refresh pending comments
+      const updatedComments = await commentService.listComments({ status: 'pending' })
+      setPendingComments(updatedComments)
+    } catch (error) {
+      console.error('Failed to apply schema comment:', error)
+    }
+  }
+
+  const handleApproveReview = async () => {
+    if (!reviewingComment) return
+
+    try {
+      await commentService.approveComment(reviewingComment.id, reviewFeedback || undefined)
+      
+      // Refresh pending comments
+      const updatedComments = await commentService.listComments({ status: 'pending' })
+      setPendingComments(updatedComments)
+      
+      // Close dialog
+      setReviewDialog(false)
+      setReviewingComment(null)
+      setReviewFeedback('')
+    } catch (error) {
+      console.error('Failed to approve comment:', error)
+    }
+  }
+
+  const handleRejectReview = async () => {
+    if (!reviewingComment || !reviewFeedback.trim()) return
+
+    try {
+      await commentService.rejectComment(reviewingComment.id, reviewFeedback)
+      
+      // Refresh pending comments
+      const updatedComments = await commentService.listComments({ status: 'pending' })
+      setPendingComments(updatedComments)
+      
+      // Close dialog
+      setReviewDialog(false)
+      setReviewingComment(null)
+      setReviewFeedback('')
+    } catch (error) {
+      console.error('Failed to reject comment:', error)
+    }
+  }
+
+  const handleSelectCatalog = async (catalog: string) => {
+    dispatch(selectCatalog(catalog))
+    await dispatch(fetchSchemas({ catalog }))
+  }
+
+  const handleSelectSchema = async (schema: string) => {
+    if (!selectedCatalog) return
+    dispatch(selectSchema(schema))
+    await dispatch(fetchTables({ catalog: selectedCatalog, schema }))
+  }
+
+  const handleSelectTable = async (table: string) => {
+    if (!selectedCatalog || !selectedSchema) return
+    dispatch(selectTable(table))
+    await dispatch(fetchColumns({ catalog: selectedCatalog, schema: selectedSchema, table }))
+  }
+
+  const handleOpenCommentDialog = (entity: any, type: string) => {
+    setSelectedEntity({ ...entity, type })
+    setSuggestedComment(entity.comment || '')
+    setCommentDialog(true)
+  }
+
+  const handleSubmitComment = async () => {
+    if (!selectedEntity || !suggestedComment.trim()) return
+
+    setSubmitting(true)
+    try {
+      await dispatch(
+        createComment({
+          entity_type: selectedEntity.type,
+          entity_catalog: selectedEntity.catalog_name || selectedCatalog,
+          entity_schema: selectedEntity.schema_name || selectedSchema,
+          entity_table: selectedEntity.table_name || (selectedEntity.type === 'table' ? selectedEntity.name : undefined),
+          entity_column: selectedEntity.type === 'column' ? selectedEntity.name : undefined,
+          current_comment: selectedEntity.comment,
+          suggested_comment: suggestedComment,
+        })
+      ).unwrap()
+
+      setCommentDialog(false)
+      setSuggestedComment('')
+      setSelectedEntity(null)
+    } catch (error) {
+      console.error('Failed to create comment:', error)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const renderBreadcrumbs = () => (
+    <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />} sx={{ mb: 2 }}>
+      <Link
+        underline="hover"
+        color="inherit"
+        href="#"
+        onClick={() => {
+          dispatch(selectCatalog(''))
+          dispatch(fetchCatalogs())
+        }}
+      >
+        Catalogs
+      </Link>
+      {selectedCatalog && (
+        <Link
+          underline="hover"
+          color="inherit"
+          href="#"
+          onClick={() => handleSelectCatalog(selectedCatalog)}
+        >
+          {selectedCatalog}
+        </Link>
+      )}
+      {selectedSchema && (
+        <Link
+          underline="hover"
+          color="inherit"
+          href="#"
+          onClick={() => handleSelectSchema(selectedSchema)}
+        >
+          {selectedSchema}
+        </Link>
+      )}
+      {selectedTable && <Typography color="text.primary">{selectedTable}</Typography>}
+    </Breadcrumbs>
+  )
+
+  return (
+    <Box>
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
+        <Box sx={{ 
+          mb: 3,
+          background: 'linear-gradient(135deg, #FF6F3F 0%, #FF8A65 100%)',
+          borderRadius: 2,
+          p: 3,
+          color: 'white'
+        }}>
+          <Typography 
+            variant="h4" 
+            gutterBottom
+            sx={{ 
+              fontWeight: 700,
+              textShadow: '0 2px 4px rgba(0,0,0,0.2)',
+              letterSpacing: '-0.025em'
+            }}
+          >
+            🗂️ Catalog Explorer
+          </Typography>
+          <Typography 
+            variant="subtitle1" 
+            sx={{ 
+              opacity: 0.9,
+              fontWeight: 400 
+            }}
+          >
+            Explore your Databricks Unity Catalog with real-time metadata management
+          </Typography>
+        </Box>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3, delay: 0.2 }}
+      >
+        {renderBreadcrumbs()}
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.3 }}
+      >
+        <Grid container spacing={3}>
+          <Grid item xs={12} md={4}>
+            <Paper sx={{ 
+              p: 2, 
+              height: '70vh', 
+              overflow: 'auto',
+              background: 'linear-gradient(135deg, #FFFFFF 0%, #F8FAFC 100%)',
+              border: '1px solid #E2E8F0'
+            }}>
+            <TextField
+              fullWidth
+              size="small"
+              placeholder="🔍 Search catalogs, schemas, and tables..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              sx={{ 
+                mb: 2,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 2,
+                  backgroundColor: '#FFFFFF',
+                  '&:hover .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#FF6F3F',
+                  },
+                  '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                    borderColor: '#FF6F3F',
+                    borderWidth: 2,
+                  },
+                },
+              }}
+            />
+
+            {loading && (
+              <Box display="flex" justifyContent="center" p={3}>
+                <CircularProgress />
+              </Box>
+            )}
+
+            {error && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {error}
+              </Alert>
+            )}
+
+            {/* Accordion-style catalog explorer with animations */}
+            <AnimatePresence>
+              {catalogs
+                .filter((c) => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
+                .map((catalog, index) => {
+                const catalogPendingCount = getPendingCommentsCount('catalog', catalog.name)
+                const catalogSchemas = schemas.filter(s => s.catalog_name === catalog.name)
+                
+                return (
+                  <motion.div
+                    key={catalog.name}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3, delay: index * 0.1 }}
+                    whileHover={{ scale: 1.01 }}
+                  >
+                    <Accordion 
+                      expanded={expandedCatalogs.has(catalog.name)}
+                      onChange={() => toggleCatalogExpansion(catalog.name)}
+                      data-testid={`catalog-accordion-${catalog.name}`}
+                      sx={{
+                        background: 'linear-gradient(135deg, #FFFFFF 0%, #F8FAFC 100%)',
+                        border: '1px solid #E2E8F0',
+                        '&:hover': {
+                          borderColor: '#CBD5E1',
+                          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                        },
+                      }}
+                    >
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                      <Box display="flex" alignItems="center" width="100%" justifyContent="space-between">
+                        <Box display="flex" alignItems="center" gap={1.5}>
+                          <motion.div whileHover={{ rotate: 15 }} transition={{ duration: 0.2 }}>
+                            <StorageIcon 
+                              sx={{ 
+                                color: '#FF6F3F', 
+                                fontSize: 28,
+                                filter: 'drop-shadow(0 2px 4px rgba(255, 111, 63, 0.3))'
+                              }} 
+                            />
+                          </motion.div>
+                          <Typography 
+                            variant="h6" 
+                            fontWeight="600"
+                            sx={{ 
+                              color: '#1E293B',
+                              letterSpacing: '-0.015em'
+                            }}
+                          >
+                            {catalog.name}
+                          </Typography>
+                          {catalogPendingCount > 0 && (
+                            <motion.div
+                              initial={{ scale: 0 }}
+                              animate={{ scale: 1 }}
+                              whileHover={{ scale: 1.1 }}
+                              transition={{ type: "spring", stiffness: 300 }}
+                            >
+                              <Badge 
+                                badgeContent={catalogPendingCount} 
+                                color="warning"
+                                sx={{
+                                  '& .MuiBadge-badge': {
+                                    background: 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)',
+                                    color: 'white',
+                                    fontWeight: 600,
+                                    fontSize: '0.75rem',
+                                  }
+                                }}
+                              >
+                                <PendingIcon 
+                                  fontSize="small" 
+                                  sx={{ 
+                                    color: '#F59E0B',
+                                    filter: 'drop-shadow(0 1px 2px rgba(245, 158, 11, 0.3))'
+                                  }} 
+                                />
+                              </Badge>
+                            </motion.div>
+                          )}
+                        </Box>
+                        <motion.div whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.95 }}>
+                          <IconButton
+                            size="small"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleOpenCommentDialog(catalog, 'catalog')
+                            }}
+                            sx={{
+                              backgroundColor: '#F1F5F9',
+                              color: '#64748B',
+                              '&:hover': {
+                                backgroundColor: '#E2E8F0',
+                                color: '#475569',
+                              },
+                            }}
+                          >
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                        </motion.div>
+                      </Box>
+                    </AccordionSummary>
+                    
+                    <AccordionDetails sx={{ pt: 0 }}>
+                      {catalogSchemas.map((schema) => {
+                        const schemaPendingCount = getPendingCommentsCount('schema', catalog.name, schema.name)
+                        const schemaKey = `${catalog.name}.${schema.name}`
+                        const schemaTables = tables.filter(t => 
+                          t.catalog_name === catalog.name && t.schema_name === schema.name
+                        )
+                        
+                        // Find pending schema comments for this specific schema
+                        const schemaPendingComments = pendingComments.filter(comment => 
+                          comment.entity_type === 'schema' &&
+                          comment.entity_catalog === catalog.name &&
+                          comment.entity_schema === schema.name
+                        )
+                        
+                        return (
+                          <Accordion 
+                            key={schema.name}
+                            expanded={expandedSchemas.has(schemaKey)}
+                            onChange={() => toggleSchemaExpansion(catalog.name, schema.name)}
+                            data-testid={`schema-accordion-${schema.name}`}
+                            sx={{ ml: 2 }}
+                          >
+                            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                              <Box display="flex" alignItems="center" width="100%" justifyContent="space-between">
+                                <Box display="flex" alignItems="center" gap={1}>
+                                  <FolderIcon color="secondary" />
+                                  <Typography variant="body1">
+                                    {schema.name}
+                                  </Typography>
+                                  {schemaPendingCount > 0 && (
+                                    <Badge badgeContent={schemaPendingCount} color="warning">
+                                      <PendingIcon fontSize="small" color="warning" />
+                                    </Badge>
+                                  )}
+                                </Box>
+                                <Box display="flex" alignItems="center" gap={1}>
+                                  <IconButton
+                                    size="small"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      handleOpenCommentDialog(schema, 'schema')
+                                    }}
+                                  >
+                                    <EditIcon fontSize="small" />
+                                  </IconButton>
+                                </Box>
+                              </Box>
+                            </AccordionSummary>
+                            
+                            <AccordionDetails sx={{ pt: 0 }}>
+                              {/* Pending Schema Comments */}
+                              {schemaPendingComments.map((comment) => (
+                                <Box key={comment.id} sx={{ mb: 1, p: 1, bgcolor: 'warning.light', borderRadius: 1 }} data-testid="pending-schema-comment">
+                                  <Box display="flex" alignItems="center" justifyContent="space-between" mb={0.5}>
+                                    <Box display="flex" alignItems="center" gap={0.5}>
+                                      <PendingIcon fontSize="small" color="warning" />
+                                      <Chip 
+                                        label={comment.status.toUpperCase()} 
+                                        size="small" 
+                                        color={comment.status === 'pending' ? 'warning' : comment.status === 'approved' ? 'success' : 'default'}
+                                        variant="outlined"
+                                      />
+                                      <Typography variant="caption" color="text.secondary">
+                                        Schema comment suggestion
+                                      </Typography>
+                                    </Box>
+                                    
+                                    {/* Schema-level Action Buttons */}
+                                    <Box display="flex" alignItems="center" gap={1}>
+                                      {(user?.role === 'approver' || user?.role === 'admin') && comment.status === 'pending' && (
+                                        <Tooltip title="Review Schema Comment">
+                                          <IconButton 
+                                            size="small" 
+                                            onClick={() => handleSchemaReview(comment)}
+                                            color="primary"
+                                            data-testid="review-schema-comment-button"
+                                          >
+                                            <ReviewIcon fontSize="small" />
+                                          </IconButton>
+                                        </Tooltip>
+                                      )}
+                                      {user?.role === 'admin' && comment.status === 'approved' && (
+                                        <Tooltip title="Apply Schema Comment">
+                                          <IconButton 
+                                            size="small" 
+                                            onClick={() => handleSchemaApply(comment)}
+                                            color="success"
+                                            data-testid="apply-schema-comment-button"
+                                          >
+                                            <ApplyIcon fontSize="small" />
+                                          </IconButton>
+                                        </Tooltip>
+                                      )}
+                                    </Box>
+                                  </Box>
+                                  <Typography variant="body2" sx={{ mb: 0.5 }}>
+                                    {comment.suggested_comment}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    by {comment.created_by} • {new Date(comment.created_at).toLocaleDateString()}
+                                  </Typography>
+                                </Box>
+                              ))}
+                              
+                              {/* Tables in Schema */}
+                              {schemaTables.map((table) => {
+                                const tablePendingCount = getPendingCommentsCount('table', catalog.name, schema.name, table.name) +
+                                  getPendingCommentsCount('column', catalog.name, schema.name, table.name)
+                                
+                                return (
+                                  <ListItem key={table.name} disablePadding sx={{ ml: 2 }}>
+                                    <ListItemButton 
+                                      onClick={() => {
+                                        // Set catalog and schema context first
+                                        dispatch(selectCatalog(catalog.name))
+                                        dispatch(selectSchema(schema.name))
+                                        handleSelectTable(table.name)
+                                      }}
+                                      data-testid={`table-item-${table.name}`}
+                                    >
+                                      <ListItemIcon>
+                                        <TableIcon />
+                                      </ListItemIcon>
+                                      <ListItemText
+                                        primary={
+                                          <Box display="flex" alignItems="center" gap={1}>
+                                            <Typography variant="body2">
+                                              {table.name}
+                                            </Typography>
+                                            {tablePendingCount > 0 && (
+                                              <Badge badgeContent={tablePendingCount} color="warning">
+                                                <PendingIcon fontSize="small" color="warning" />
+                                              </Badge>
+                                            )}
+                                          </Box>
+                                        }
+                                        secondary={
+                                          <>
+                                            {table.comment && (
+                                              <Typography variant="caption" display="block" component="span">
+                                                {table.comment}
+                                              </Typography>
+                                            )}
+                                            <Box component="span" display="block" sx={{ mt: 0.5 }}>
+                                              <Chip label={table.table_type || 'TABLE'} size="small" sx={{ mr: 0.5 }} />
+                                              <Chip label={`${table.column_count || 0} columns`} size="small" variant="outlined" />
+                                            </Box>
+                                          </>
+                                        }
+                                      />
+                                      <IconButton
+                                        size="small"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          handleOpenCommentDialog(table, 'table')
+                                        }}
+                                      >
+                                        <EditIcon fontSize="small" />
+                                      </IconButton>
+                                    </ListItemButton>
+                                  </ListItem>
+                                )
+                              })}
+                            </AccordionDetails>
+                          </Accordion>
+                        )
+                      })}
+                    </AccordionDetails>
+                  </Accordion>
+                  </motion.div>
+                )
+              })}
+            </AnimatePresence>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} md={8}>
+          {selectedTable && columns.length > 0 ? (
+            <TableViewer
+              catalog={selectedCatalog!}
+              schema={selectedSchema!}
+              table={selectedTable}
+              tableMetadata={{
+                name: selectedTable,
+                comment: tables.find(t => t.name === selectedTable)?.comment || null,
+                table_type: tables.find(t => t.name === selectedTable)?.table_type || 'TABLE',
+                columns_count: columns.length,
+                last_updated: new Date().toISOString(),
+              }}
+              columns={columns.map(column => ({
+                ...column,
+                position: column.position || 0,
+                is_partition_key: column.is_partition_key || false,
+                is_primary_key: column.is_primary_key || false,
+              }))}
+              onCommentSuggestion={undefined}
+              onTableCommentSuggestion={undefined}
+              userRole={user?.role}
+            />
+          ) : (
+            <Paper sx={{ p: 3, height: '70vh', overflow: 'auto' }}>
+              <Box
+                display="flex"
+                flexDirection="column"
+                alignItems="center"
+                justifyContent="center"
+                height="100%"
+              >
+                <CommentIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
+                <Typography variant="h6" color="text.secondary" gutterBottom>
+                  Select an entity to view details
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Navigate through catalogs, schemas, and tables to view and manage metadata comments
+                </Typography>
+              </Box>
+            </Paper>
+          )}
+        </Grid>
+      </Grid>
+      </motion.div>
+
+      <Dialog open={commentDialog} onClose={() => setCommentDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          {selectedEntity?.comment ? 'Edit Comment' : 'Add Comment'}
+        </DialogTitle>
+        <DialogContent>
+          <Box mb={2}>
+            <Typography variant="subtitle2" color="text.secondary">
+              Entity: {selectedEntity?.type?.toUpperCase()}
+            </Typography>
+            <Typography variant="body2">
+              {selectedEntity?.full_name || selectedEntity?.name}
+            </Typography>
+          </Box>
+          {selectedEntity?.comment && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <Typography variant="subtitle2">Current Comment:</Typography>
+              <Typography variant="body2">{selectedEntity.comment}</Typography>
+            </Alert>
+          )}
+          <TextField
+            fullWidth
+            multiline
+            rows={4}
+            label="Suggested Comment"
+            value={suggestedComment}
+            onChange={(e) => setSuggestedComment(e.target.value)}
+            placeholder="Enter your suggested comment..."
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCommentDialog(false)}>Cancel</Button>
+          <Button
+            onClick={handleSubmitComment}
+            variant="contained"
+            disabled={!suggestedComment.trim() || submitting}
+          >
+            {submitting ? 'Submitting...' : 'Submit Suggestion'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Review Dialog for Schema and other entity-level reviews */}
+      <Dialog open={reviewDialog} onClose={() => setReviewDialog(false)} maxWidth="md" fullWidth data-testid="review-dialog">
+        <DialogTitle>Review Comment Suggestion</DialogTitle>
+        <DialogContent>
+          {reviewingComment && (
+            <Box>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Entity: {reviewingComment.entity_catalog}.{reviewingComment.entity_schema}
+                {reviewingComment.entity_table && `.${reviewingComment.entity_table}`}
+                {reviewingComment.entity_column && `.${reviewingComment.entity_column}`}
+              </Typography>
+              
+              <Typography variant="subtitle2" gutterBottom>
+                Author: {reviewingComment.created_by}
+              </Typography>
+              
+              {reviewingComment.current_comment && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  <Typography variant="subtitle2">Current Comment:</Typography>
+                  <Typography variant="body2">{reviewingComment.current_comment}</Typography>
+                </Alert>
+              )}
+              
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                <Typography variant="subtitle2">Suggested Comment:</Typography>
+                <Typography variant="body2">{reviewingComment.suggested_comment}</Typography>
+              </Alert>
+              
+              <TextField
+                fullWidth
+                multiline
+                rows={3}
+                label="Feedback (optional for approval, required for rejection)"
+                value={reviewFeedback}
+                onChange={(e) => setReviewFeedback(e.target.value)}
+                placeholder="Add your feedback..."
+                sx={{ mt: 2 }}
+                data-testid="review-feedback-input"
+              />
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReviewDialog(false)}>Cancel</Button>
+          <Button
+            onClick={handleRejectReview}
+            color="error"
+            variant="outlined"
+            disabled={!reviewFeedback.trim()}
+            data-testid="reject-comment-button"
+          >
+            Reject
+          </Button>
+          <Button
+            onClick={handleApproveReview}
+            color="success"
+            variant="contained"
+            data-testid="approve-comment-button"
+          >
+            Approve
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  )
+}

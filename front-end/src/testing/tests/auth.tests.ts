@@ -1,0 +1,439 @@
+// Authentication tests for Metadata Manager
+import { TestCategory } from '../types';
+import { assert } from '../utils/assertions';
+import api from '../../services/api';
+import axios from 'axios';
+
+export const authTests: TestCategory = {
+  name: 'Authentication',
+  description: 'Tests for login, token management, and user authentication',
+  tests: [
+    {
+      name: 'Migrate User IDs to Fixed UUIDs',
+      description: 'One-time migration to fix user UUIDs in database',
+      fn: async () => {
+        console.log('=== MIGRATING USER IDs ===');
+
+        const response = await axios.post('/api/v1/auth/migrate-user-ids');
+
+        console.log('Migration Response:', JSON.stringify(response.data, null, 2));
+
+        assert.statusCode(response.status, 200, 'Migration should succeed');
+        assert.hasProperty(response.data, 'status', 'Response should have status');
+        assert.equals(response.data.status, 'success', 'Migration should be successful');
+
+        console.log('✅ User IDs migrated to fixed UUIDs!');
+        console.log('Old users:', response.data.old_users);
+        console.log('New users:', response.data.new_users);
+      },
+    },
+    {
+      name: 'Debug Token Flow - Complete Analysis',
+      description: 'Comprehensive debug of token generation and verification',
+      fn: async () => {
+        // Step 1: Login and get token
+        const loginResponse = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        assert.statusCode(loginResponse.status, 200, 'Login should return 200');
+        const token = loginResponse.data.access_token;
+
+        console.log('=== DEBUG TOKEN FLOW ===');
+        console.log('Login successful');
+        console.log(`Token starts with: ${token.substring(0, 50)}...`);
+        console.log(`Token length: ${token.length}`);
+        console.log(`Full token: ${token}`);
+
+        // Step 2: Debug the token with backend
+        const debugResponse = await axios.post('/api/v1/auth/debug-token', null, {
+          params: { token },
+        });
+
+        console.log('=== DEBUG TOKEN RESPONSE ===');
+        console.log(JSON.stringify(debugResponse.data, null, 2));
+
+        // Check each debug step
+        if (debugResponse.data.debug_steps) {
+          console.log('=== DETAILED DEBUG STEPS ===');
+          debugResponse.data.debug_steps.forEach((step: any, index: number) => {
+            console.log(`Step ${index + 1}: ${step.step} - ${step.status}`);
+            if (step.error) {
+              console.error(`  ERROR: ${step.error}`);
+            }
+            if (step.payload) {
+              console.log(`  Payload:`, step.payload);
+            }
+            if (step.user) {
+              console.log(`  User found:`, step.user);
+            }
+          });
+        }
+
+        // Store the debug info for error reporting
+        const debugInfo = debugResponse.data;
+
+        // Step 3a: Try /me-debug endpoint first
+        console.log('=== TESTING /ME-DEBUG ENDPOINT ===');
+        try {
+          const meDebugResponse = await axios.get('/api/v1/auth/me-debug', {
+            headers: {
+              'X-Auth-Token': token,
+              'X-Auth-Token': token,
+            Authorization: `Bearer ${token}`,
+            },
+          });
+
+          console.log('/me-debug Response:', JSON.stringify(meDebugResponse.data, null, 2));
+
+          if (meDebugResponse.data.success) {
+            console.log('✅ /me-debug endpoint SUCCESS!');
+          } else {
+            console.error('❌ /me-debug failed at step:', meDebugResponse.data.step);
+            console.error('Error:', meDebugResponse.data.error);
+          }
+        } catch (meDebugError: any) {
+          console.error('❌ /me-debug threw exception:', meDebugError.response?.status, meDebugError.response?.data);
+        }
+
+        // Step 3b: Try to use the token with /me endpoint
+        console.log('=== TESTING /ME ENDPOINT ===');
+        try {
+          const meResponse = await axios.get('/api/v1/auth/me', {
+            headers: {
+              'X-Auth-Token': token,
+              'X-Auth-Token': token,
+            Authorization: `Bearer ${token}`,
+            },
+          });
+
+          console.log('=== /ME ENDPOINT SUCCESS ===');
+          console.log(JSON.stringify(meResponse.data, null, 2));
+          assert.statusCode(meResponse.status, 200, '/me endpoint should return 200');
+        } catch (meError: any) {
+          console.error('=== /ME ENDPOINT FAILED ===');
+          console.error('Status:', meError.response?.status);
+          console.error('Data:', meError.response?.data);
+          console.error('Debug Info:', JSON.stringify(debugInfo, null, 2));
+
+          throw new Error(
+            `/me failed with ${meError.response?.status}. Token valid=${debugInfo.token_valid}. ` +
+            `Check console for full details.`
+          );
+        }
+      },
+    },
+    {
+      name: 'Health Check - Database Status',
+      description: 'Check if backend can connect to database',
+      fn: async () => {
+        const response = await api.get('/health');
+        assert.statusCode(response.status, 200, 'Health check should return 200');
+
+        // Log detailed health info for debugging
+        const healthData = response.data || {};
+        console.log('Health Check:', JSON.stringify(healthData, null, 2));
+
+        // Throw error with full response if structure is unexpected
+        if (!healthData.services) {
+          throw new Error(`Unexpected health response structure: ${JSON.stringify(healthData)}`);
+        }
+
+        if (healthData.services.database !== 'connected') {
+          throw new Error(`Database not connected. Health data: ${JSON.stringify(healthData)}`);
+        }
+      },
+    },
+    {
+      name: 'Login with Admin User',
+      description: 'Test login with admin@example.com credentials',
+      fn: async () => {
+        try {
+          const response = await api.post('/api/v1/auth/login', {
+            username: 'admin@example.com',
+            password: 'admin123',
+          });
+
+          assert.statusCode(response.status, 200, 'Login should return 200');
+          assert.hasProperty(response.data, 'access_token', 'Should have access token');
+          assert.hasProperty(response.data, 'refresh_token', 'Should have refresh token');
+          assert.hasProperty(response.data, 'user', 'Should have user data');
+          assert.equals(response.data.user.email, 'admin@example.com', 'Email should match');
+          assert.equals(response.data.user.role, 'admin', 'Role should be admin');
+        } catch (error: any) {
+          // Capture detailed error information
+          const errorDetails = error.response?.data || error.message;
+          throw new Error(`Login failed with status ${error.response?.status}: ${JSON.stringify(errorDetails)}`);
+        }
+      },
+    },
+    {
+      name: 'Login with Approver User',
+      description: 'Test login with approver@example.com credentials',
+      fn: async () => {
+        const response = await api.post('/api/v1/auth/login', {
+          username: 'approver@example.com',
+          password: 'approver123',
+        });
+
+        assert.statusCode(response.status, 200, 'Login should return 200');
+        assert.hasProperty(response.data, 'user', 'Should have user data');
+        assert.equals(response.data.user.email, 'approver@example.com', 'Email should match');
+        assert.equals(response.data.user.role, 'approver', 'Role should be approver');
+      },
+    },
+    {
+      name: 'Login with Regular User',
+      description: 'Test login with user@example.com credentials',
+      fn: async () => {
+        const response = await api.post('/api/v1/auth/login', {
+          username: 'user@example.com',
+          password: 'user123',
+        });
+
+        assert.statusCode(response.status, 200, 'Login should return 200');
+        assert.hasProperty(response.data, 'user', 'Should have user data');
+        assert.equals(response.data.user.email, 'user@example.com', 'Email should match');
+        assert.equals(response.data.user.role, 'suggest_only', 'Role should be suggest_only');
+      },
+    },
+    {
+      name: 'Reject Invalid Credentials',
+      description: 'Test that invalid credentials are rejected',
+      fn: async () => {
+        try {
+          await api.post('/api/v1/auth/login', {
+            username: 'admin@example.com',
+            password: 'wrongpassword',
+          });
+          throw new Error('Should have rejected invalid credentials');
+        } catch (error: any) {
+          assert.equals(error.response?.status, 401, 'Should return 401 for invalid credentials');
+        }
+      },
+    },
+    {
+      name: 'Get Current User Info',
+      description: 'Test /api/v1/auth/me endpoint with valid token',
+      fn: async () => {
+        // First login to get token
+        const loginResponse = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        const token = loginResponse.data.access_token;
+
+        // Then get user info using raw axios
+        const meResponse = await axios.get('/api/v1/auth/me', {
+          headers: {
+            'X-Auth-Token': token,
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        assert.statusCode(meResponse.status, 200, 'Should return 200');
+        assert.hasProperty(meResponse.data, 'user', 'Should have user data');
+        assert.hasProperty(meResponse.data.user, 'permissions', 'Should have permissions');
+      },
+    },
+    {
+      name: 'Verify Admin Permissions',
+      description: 'Check that admin has all required permissions',
+      fn: async () => {
+        const response = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        const permissions = response.data.user.permissions;
+        assert.isTrue(permissions.can_manage_users, 'Admin should have can_manage_users');
+        assert.isTrue(permissions.can_view_audit_logs, 'Admin should have can_view_audit_logs');
+        assert.isTrue(permissions.can_approve_suggestions, 'Admin should have can_approve_suggestions');
+        assert.isTrue(permissions.can_apply_suggestions, 'Admin should have can_apply_suggestions');
+      },
+    },
+    {
+      name: 'Verify Approver Permissions',
+      description: 'Check that approver has correct permissions',
+      fn: async () => {
+        const response = await api.post('/api/v1/auth/login', {
+          username: 'approver@example.com',
+          password: 'approver123',
+        });
+
+        const permissions = response.data.user.permissions;
+        assert.isTrue(permissions.can_approve_suggestions, 'Approver should have can_approve_suggestions');
+        assert.isTrue(permissions.can_apply_suggestions, 'Approver should have can_apply_suggestions');
+        assert.isFalse(permissions.can_manage_users, 'Approver should NOT have can_manage_users');
+        assert.isFalse(permissions.can_view_audit_logs, 'Approver should NOT have can_view_audit_logs');
+      },
+    },
+    {
+      name: 'Verify User Permissions',
+      description: 'Check that regular user has limited permissions',
+      fn: async () => {
+        const response = await api.post('/api/v1/auth/login', {
+          username: 'user@example.com',
+          password: 'user123',
+        });
+
+        const permissions = response.data.user.permissions;
+        assert.isTrue(permissions.can_create_suggestions, 'User should have can_create_suggestions');
+        assert.isFalse(permissions.can_approve_suggestions, 'User should NOT have can_approve_suggestions');
+        assert.isFalse(permissions.can_manage_users, 'User should NOT have can_manage_users');
+      },
+    },
+    {
+      name: 'Get Current User with Valid Token',
+      description: 'Test that /api/v1/auth/me works immediately after login',
+      fn: async () => {
+        // Login first
+        const loginResponse = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        const token = loginResponse.data.access_token;
+
+        // Use raw axios to bypass interceptor completely
+        const meResponse = await axios.get('/api/v1/auth/me', {
+          headers: {
+            'X-Auth-Token': token,
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        assert.statusCode(meResponse.status, 200, 'Should return 200 with valid token');
+        assert.hasProperty(meResponse.data, 'user', 'Should have user data');
+        assert.equals(meResponse.data.user.email, 'admin@example.com', 'Email should match');
+      },
+    },
+    {
+      name: 'Reject Invalid Token',
+      description: 'Test that /api/v1/auth/me rejects invalid tokens',
+      fn: async () => {
+        try {
+          await api.get('/api/v1/auth/me', {
+            headers: {
+              Authorization: 'Bearer invalid_token_here',
+            },
+          });
+          throw new Error('Should have rejected invalid token');
+        } catch (error: any) {
+          assert.isTrue(
+            error.response?.status === 401 || error.response?.status === 403,
+            'Should return 401 or 403 for invalid token'
+          );
+        }
+      },
+    },
+    {
+      name: 'Reject Expired Token',
+      description: 'Test that /api/v1/auth/me rejects expired tokens',
+      fn: async () => {
+        // This is a JWT token that expired in the past
+        const expiredToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0IiwiZXhwIjoxNjAwMDAwMDAwfQ.invalid';
+
+        try {
+          await api.get('/api/v1/auth/me', {
+            headers: {
+              Authorization: `Bearer ${expiredToken}`,
+            },
+          });
+          throw new Error('Should have rejected expired token');
+        } catch (error: any) {
+          assert.isTrue(
+            error.response?.status === 401 || error.response?.status === 403,
+            'Should return 401 or 403 for expired token'
+          );
+        }
+      },
+    },
+    {
+      name: 'Token Persists Across Requests',
+      description: 'Test that token works for multiple requests',
+      fn: async () => {
+        const loginResponse = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        const token = loginResponse.data.access_token;
+
+        // Make multiple requests with the same token using raw axios
+        const me1 = await axios.get('/api/v1/auth/me', {
+          headers: { 'X-Auth-Token': token,
+            Authorization: `Bearer ${token}` },
+        });
+        assert.statusCode(me1.status, 200, 'First request should succeed');
+
+        const me2 = await axios.get('/api/v1/auth/me', {
+          headers: { 'X-Auth-Token': token,
+            Authorization: `Bearer ${token}` },
+        });
+        assert.statusCode(me2.status, 200, 'Second request should succeed');
+
+        assert.equals(
+          me1.data.user.email,
+          me2.data.user.email,
+          'Both requests should return same user'
+        );
+      },
+    },
+    {
+      name: 'Each User Gets Their Own Token',
+      description: 'Test that different users get different tokens',
+      fn: async () => {
+        const admin = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        const user = await api.post('/api/v1/auth/login', {
+          username: 'user@example.com',
+          password: 'user123',
+        });
+
+        // Tokens should be different
+        assert.isTrue(
+          admin.data.access_token !== user.data.access_token,
+          'Different users should get different tokens'
+        );
+
+        // Each token should return correct user using raw axios
+        const adminMe = await axios.get('/api/v1/auth/me', {
+          headers: {
+            'X-Auth-Token': admin.data.access_token,
+            Authorization: `Bearer ${admin.data.access_token}`
+          },
+        });
+        assert.equals(adminMe.data.user.email, 'admin@example.com', 'Admin token should return admin user');
+
+        const userMe = await axios.get('/api/v1/auth/me', {
+          headers: {
+            'X-Auth-Token': user.data.access_token,
+            Authorization: `Bearer ${user.data.access_token}`
+          },
+        });
+        assert.equals(userMe.data.user.email, 'user@example.com', 'User token should return user');
+      },
+    },
+    {
+      name: 'Login Returns Refresh Token',
+      description: 'Test that login response includes refresh token',
+      fn: async () => {
+        const response = await api.post('/api/v1/auth/login', {
+          username: 'admin@example.com',
+          password: 'admin123',
+        });
+
+        assert.hasProperty(response.data, 'access_token', 'Should have access token');
+        assert.hasProperty(response.data, 'refresh_token', 'Should have refresh token');
+        assert.hasProperty(response.data, 'token_type', 'Should have token type');
+        assert.equals(response.data.token_type, 'bearer', 'Token type should be bearer');
+      },
+    },
+  ],
+};
