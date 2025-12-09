@@ -1,0 +1,239 @@
+-- Metadata Manager Schema Creation Script
+-- Generated from template with configurable catalog/schema names
+-- Catalog: {{ catalog }}
+-- Schema: {{ schema_primary }}
+-- Test Schema: {{ schema_test }}
+
+-- ============================================================================
+-- CREATE SCHEMAS
+-- ============================================================================
+
+CREATE SCHEMA IF NOT EXISTS {{ catalog }}.{{ schema_primary }}
+COMMENT 'Central repository for Databricks metadata management';
+
+{% if create_test_schema %}
+CREATE SCHEMA IF NOT EXISTS {{ catalog }}.{{ schema_test }}
+COMMENT 'Test data for metadata manager application';
+{% endif %}
+
+-- ============================================================================
+-- METADATA_MANAGER SCHEMA TABLES
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_primary }}.users (
+  user_id STRING NOT NULL,
+  username STRING NOT NULL,
+  email STRING NOT NULL,
+  full_name STRING,
+  role STRING NOT NULL,
+  is_active BOOLEAN,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+)
+COMMENT 'System users with role-based access for metadata management';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_primary }}.comment_suggestions (
+  suggestion_id STRING NOT NULL,
+  entity_type STRING NOT NULL,
+  entity_catalog STRING NOT NULL,
+  entity_schema STRING,
+  entity_table STRING,
+  entity_column STRING,
+  entity_full_path STRING NOT NULL,
+  current_comment STRING,
+  suggested_comment STRING NOT NULL,
+  status STRING NOT NULL,
+  created_by STRING NOT NULL,
+  approved_by STRING,
+  submitted_at TIMESTAMP,
+  approved_at TIMESTAMP,
+  applied_at TIMESTAMP,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+)
+COMMENT 'Central repository tracking all metadata comment suggestions';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_primary }}.approvals (
+  approval_id STRING NOT NULL,
+  suggestion_id STRING NOT NULL,
+  approver_id STRING NOT NULL,
+  action STRING NOT NULL,
+  feedback STRING,
+  created_at TIMESTAMP
+)
+COMMENT 'Complete history of all approval actions on comment suggestions';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_primary }}.audit_logs (
+  log_id STRING NOT NULL,
+  user_id STRING,
+  username STRING,
+  action STRING NOT NULL,
+  entity_type STRING,
+  entity_id STRING,
+  entity_path STRING,
+  details STRING,
+  ip_address STRING,
+  user_agent STRING,
+  created_at TIMESTAMP
+)
+COMMENT 'Comprehensive audit trail for all system activities';
+
+{% if create_test_schema %}
+-- ============================================================================
+-- METADATA_TEST SCHEMA TABLES (Test Data)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.users (
+  user_id BIGINT COMMENT 'Unique identifier for each user',
+  email STRING COMMENT 'User email address for login and notifications',
+  first_name STRING COMMENT 'User first name',
+  last_name STRING COMMENT 'User last name',
+  phone STRING COMMENT 'User phone number for contact',
+  address STRING COMMENT 'User billing address',
+  city STRING COMMENT 'User city',
+  state STRING COMMENT 'User state or province',
+  zip_code STRING COMMENT 'User postal/zip code',
+  country STRING COMMENT 'User country',
+  registration_date DATE COMMENT 'Date when user registered',
+  last_login TIMESTAMP COMMENT 'Timestamp of users last login',
+  is_active BOOLEAN COMMENT 'Whether user account is active',
+  total_orders INT COMMENT 'Total number of orders placed by user',
+  total_spent DECIMAL(10,2) COMMENT 'Total amount spent by user'
+)
+COMMENT 'Customer information and profile data';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.products (
+  product_id BIGINT COMMENT 'Unique product identifier',
+  sku STRING COMMENT 'Stock keeping unit - unique product code',
+  product_name STRING COMMENT 'Display name of the product',
+  category STRING COMMENT 'Product category (Electronics, Clothing, etc.)',
+  subcategory STRING COMMENT 'Product subcategory for finer classification',
+  brand STRING COMMENT 'Brand or manufacturer name',
+  description STRING COMMENT 'Detailed product description',
+  price DECIMAL(10,2) COMMENT 'Current selling price of the product',
+  cost DECIMAL(10,2) COMMENT 'Cost to acquire/manufacture the product',
+  weight DECIMAL(8,3) COMMENT 'Product weight in pounds',
+  dimensions STRING COMMENT 'Product dimensions (LxWxH)',
+  color STRING COMMENT 'Primary color of the product',
+  size STRING COMMENT 'Size specification (S/M/L, numeric, etc.)',
+  inventory_count INT COMMENT 'Current stock level',
+  reorder_level INT COMMENT 'Minimum stock level before reordering',
+  supplier_id INT COMMENT 'Reference to supplier providing this product',
+  created_date DATE COMMENT 'Date product was added to catalog',
+  last_updated TIMESTAMP COMMENT 'Last time product info was updated',
+  is_active BOOLEAN COMMENT 'Whether product is currently available for sale'
+)
+COMMENT 'Product catalog with detailed item specifications and inventory';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.orders (
+  order_id BIGINT COMMENT 'Unique order identifier',
+  user_id BIGINT COMMENT 'Reference to user who placed the order',
+  order_date TIMESTAMP COMMENT 'When the order was placed',
+  order_status STRING COMMENT 'Current status: pending, processing, shipped, delivered, cancelled',
+  payment_method STRING COMMENT 'How customer paid: credit_card, paypal, bank_transfer',
+  payment_status STRING COMMENT 'Payment status: pending, completed, failed, refunded',
+  subtotal DECIMAL(10,2) COMMENT 'Order subtotal before taxes and shipping',
+  tax_amount DECIMAL(8,2) COMMENT 'Total tax amount charged',
+  shipping_cost DECIMAL(8,2) COMMENT 'Shipping and handling charges',
+  discount_amount DECIMAL(8,2) COMMENT 'Total discounts applied',
+  total_amount DECIMAL(10,2) COMMENT 'Final total amount charged',
+  shipping_address STRING COMMENT 'Address where order should be shipped',
+  billing_address STRING COMMENT 'Billing address for payment',
+  tracking_number STRING COMMENT 'Shipping tracking number',
+  shipped_date DATE COMMENT 'Date order was shipped',
+  delivered_date DATE COMMENT 'Date order was delivered',
+  notes STRING COMMENT 'Special instructions or notes'
+)
+COMMENT 'Customer orders with payment and shipping details';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.order_items (
+  order_item_id BIGINT COMMENT 'Unique identifier for order line item',
+  order_id BIGINT COMMENT 'Reference to parent order',
+  product_id BIGINT COMMENT 'Reference to ordered product',
+  quantity INT COMMENT 'Number of units ordered',
+  unit_price DECIMAL(10,2) COMMENT 'Price per unit at time of order',
+  total_price DECIMAL(10,2) COMMENT 'Total price for this line item',
+  discount_applied DECIMAL(8,2) COMMENT 'Discount amount applied to this item',
+  product_name STRING COMMENT 'Product name at time of order (for historical record)',
+  sku STRING COMMENT 'Product SKU at time of order'
+)
+COMMENT 'Individual line items within customer orders';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.employees (
+  employee_id INT COMMENT 'Unique employee identifier',
+  employee_number STRING COMMENT 'Human-readable employee number',
+  first_name STRING COMMENT 'Employee first name',
+  last_name STRING COMMENT 'Employee last name',
+  email STRING COMMENT 'Corporate email address',
+  phone STRING COMMENT 'Work phone number',
+  department STRING COMMENT 'Department: Engineering, Sales, Marketing, HR, Finance',
+  job_title STRING COMMENT 'Current job title or position',
+  manager_id INT COMMENT 'Employee ID of direct manager',
+  hire_date DATE COMMENT 'Date employee was hired',
+  salary DECIMAL(10,2) COMMENT 'Current annual salary',
+  bonus_eligible BOOLEAN COMMENT 'Whether employee is eligible for bonuses',
+  employment_status STRING COMMENT 'Employment status: active, terminated, on_leave',
+  office_location STRING COMMENT 'Primary office location',
+  remote_work_eligible BOOLEAN COMMENT 'Whether employee can work remotely',
+  performance_rating DECIMAL(2,1) COMMENT 'Latest performance rating (1-5 scale)',
+  last_promotion_date DATE COMMENT 'Date of most recent promotion',
+  benefits_tier STRING COMMENT 'Benefits package tier: basic, premium, executive'
+)
+COMMENT 'Employee master data with HR and payroll information';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.customer_segments (
+  user_id BIGINT COMMENT 'Reference to user',
+  segment STRING COMMENT 'Customer segment: VIP, Regular, New, At_Risk, Churned',
+  ltv DECIMAL(10,2) COMMENT 'Customer lifetime value',
+  avg_order_value DECIMAL(8,2) COMMENT 'Average order value for this customer',
+  order_frequency DECIMAL(5,2) COMMENT 'Average days between orders',
+  last_order_date DATE COMMENT 'Date of most recent order',
+  predicted_churn_probability DECIMAL(3,2) COMMENT 'Probability of customer churning (0-1)',
+  segment_assigned_date DATE COMMENT 'When customer was assigned to current segment',
+  preferred_category STRING COMMENT 'Customers most purchased category',
+  communication_preference STRING COMMENT 'How customer prefers to be contacted'
+)
+COMMENT 'Customer segmentation data for marketing and retention analysis';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.daily_sales_summary (
+  date DATE COMMENT 'Date of sales data',
+  total_orders INT COMMENT 'Number of orders placed on this date',
+  total_revenue DECIMAL(12,2) COMMENT 'Total revenue generated on this date',
+  total_units_sold INT COMMENT 'Total number of items sold',
+  average_order_value DECIMAL(10,2) COMMENT 'Average order value for this date',
+  new_customers INT COMMENT 'Number of first-time customers',
+  returning_customers INT COMMENT 'Number of returning customers',
+  top_category STRING COMMENT 'Best selling product category',
+  top_product STRING COMMENT 'Best selling individual product'
+)
+COMMENT 'Daily aggregated sales metrics for reporting and analysis';
+
+CREATE TABLE IF NOT EXISTS {{ catalog }}.{{ schema_test }}.revenue_by_product (
+  product_id BIGINT COMMENT 'Reference to product',
+  year INT COMMENT 'Revenue year',
+  quarter INT COMMENT 'Revenue quarter (1-4)',
+  month INT COMMENT 'Revenue month (1-12)',
+  units_sold INT COMMENT 'Total units sold in period',
+  gross_revenue DECIMAL(12,2) COMMENT 'Total revenue before returns/discounts',
+  net_revenue DECIMAL(12,2) COMMENT 'Revenue after returns and discounts',
+  cost_of_goods_sold DECIMAL(12,2) COMMENT 'Total cost to produce/acquire sold units',
+  gross_profit DECIMAL(12,2) COMMENT 'Gross profit (net_revenue - cogs)',
+  profit_margin DECIMAL(5,4) COMMENT 'Profit margin percentage',
+  return_rate DECIMAL(4,3) COMMENT 'Percentage of units returned',
+  discount_rate DECIMAL(4,3) COMMENT 'Average discount rate applied'
+)
+COMMENT 'Product revenue analysis with profitability metrics';
+{% endif %}
+
+-- ============================================================================
+-- SEED DATA
+-- ============================================================================
+
+INSERT INTO {{ catalog }}.{{ schema_primary }}.users
+  (user_id, username, email, full_name, role, is_active, created_at, updated_at)
+VALUES
+  ('u001', 'john_suggest', 'john.suggest@example.com', 'John Doe', 'suggest_only', true, current_timestamp(), current_timestamp()),
+  ('u002', 'jane_approver', 'jane.approver@example.com', 'Jane Smith', 'approver', true, current_timestamp(), current_timestamp()),
+  ('u003', 'admin_user', 'admin@example.com', 'Admin User', 'admin', true, current_timestamp(), current_timestamp()),
+  ('u004', 'alice_suggest', 'alice.suggest@example.com', 'Alice Johnson', 'suggest_only', true, current_timestamp(), current_timestamp()),
+  ('u005', 'bob_approver', 'bob.approver@example.com', 'Bob Williams', 'approver', true, current_timestamp(), current_timestamp());

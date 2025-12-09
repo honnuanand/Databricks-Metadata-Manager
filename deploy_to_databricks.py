@@ -32,12 +32,13 @@ class ScopeInfo:
     secret_count: int
 
 class MetadataManagerDeployer:
-    def __init__(self):
+    def __init__(self, secret_scope: str = "metadata-manager-secrets"):
         self.workspace_url = None
         self.token = None
         self.user_email = None
         self.app_name = "metadata-manager"
         self.app_folder = None  # Will be auto-detected
+        self.secret_scope = secret_scope  # Configurable secret scope name
 
         # Auto-detect workspace info
         self._auto_detect_workspace_info()
@@ -375,10 +376,12 @@ class MetadataManagerDeployer:
         database_url = None
         secret_key = None
 
+        print(f"📦 Using secret scope: {self.secret_scope}")
+
         # Get DATABASE_URL
         try:
             result = subprocess.run(
-                ['databricks', 'secrets', 'get-secret', 'metadata-manager-secrets', 'database-url', '--output', 'json'],
+                ['databricks', 'secrets', 'get-secret', self.secret_scope, 'database-url', '--output', 'json'],
                 capture_output=True,
                 text=True,
                 check=True
@@ -392,7 +395,7 @@ class MetadataManagerDeployer:
         # Get SECRET_KEY
         try:
             result = subprocess.run(
-                ['databricks', 'secrets', 'get-secret', 'metadata-manager-secrets', 'secret-key', '--output', 'json'],
+                ['databricks', 'secrets', 'get-secret', self.secret_scope, 'secret-key', '--output', 'json'],
                 capture_output=True,
                 text=True,
                 check=True
@@ -431,9 +434,9 @@ class MetadataManagerDeployer:
                 f.write(f'    value: "{secret_key}"\n')
 
             f.write('  - name: DATABRICKS_HOST\n')
-            f.write('    valueFrom: metadata-manager-secrets/databricks-host\n')
+            f.write(f'    valueFrom: {self.secret_scope}/databricks-host\n')
             f.write('  - name: DATABRICKS_TOKEN\n')
-            f.write('    valueFrom: metadata-manager-secrets/databricks-token\n')
+            f.write(f'    valueFrom: {self.secret_scope}/databricks-token\n')
 
         print("✅ Backend packaged successfully")
         return True
@@ -575,6 +578,19 @@ class MetadataManagerDeployer:
         if scope_name:
             print(f"🔐 Secrets are stored in scope: {scope_name}")
 
+        # Post-deployment instructions for service principal permissions
+        print("\n" + "=" * 60)
+        print("NEXT STEP: Grant Service Principal Permissions")
+        print("=" * 60)
+        print("The app needs Unity Catalog permissions to function.")
+        print("\n1. Find the service principal name by either:")
+        print("   - Checking the app logs in Databricks")
+        print("   - Accessing /api/v1/debug/current-user on the app")
+        print("\n2. Run the permission grant script:")
+        print("   python scripts/grant_permissions.py --principal \"<service-principal-name>\"")
+        print("\n   Or run interactively:")
+        print("   python scripts/grant_permissions.py")
+
         return True
 
     def get_app_info(self) -> bool:
@@ -675,6 +691,20 @@ class MetadataManagerDeployer:
 
         self.get_app_info()
         print("\n🎉 Deployment completed successfully!")
+
+        # Post-deployment instructions for service principal permissions
+        print("\n" + "=" * 60)
+        print("NEXT STEP: Grant Service Principal Permissions")
+        print("=" * 60)
+        print("The app needs Unity Catalog permissions to function.")
+        print("\n1. Find the service principal name by either:")
+        print("   - Checking the app logs in Databricks")
+        print("   - Accessing /api/v1/debug/current-user on the app")
+        print("\n2. Run the permission grant script:")
+        print("   python scripts/grant_permissions.py --principal \"<service-principal-name>\"")
+        print("\n   Or run interactively:")
+        print("   python scripts/grant_permissions.py")
+
         self.cleanup()
         return True
 
@@ -684,10 +714,11 @@ def main():
     parser.add_argument("--app-folder", default=None, help="App folder in workspace (auto-detected if not provided)")
     parser.add_argument("--hard-redeploy", action="store_true", help="Hard redeploy: delete existing app and redeploy")
     parser.add_argument("--skip-secrets", action="store_true", help="Skip secrets configuration")
+    parser.add_argument("--secret-scope", default="metadata-manager-secrets", help="Databricks secret scope name")
 
     args = parser.parse_args()
 
-    deployer = MetadataManagerDeployer()
+    deployer = MetadataManagerDeployer(secret_scope=args.secret_scope)
     deployer.app_name = args.app_name
 
     # Update app_folder if provided

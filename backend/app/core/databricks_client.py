@@ -15,22 +15,25 @@ class DatabricksConfig:
 
     def __init__(self):
         # Extract hostname from DATABRICKS_HOST (remove https:// prefix)
-        databricks_host = settings.DATABRICKS_HOST or "https://e2-demo-field-eng.cloud.databricks.com"
+        databricks_host = settings.DATABRICKS_HOST
+        if not databricks_host:
+            raise ValueError("DATABRICKS_HOST environment variable must be set")
         self.server_hostname = databricks_host.replace("https://", "").replace("http://", "")
 
-        self.http_path = "/sql/1.0/warehouses/00887ae543d50e2a"
+        # Use warehouse path from environment variable, with fallback for backwards compatibility
+        self.http_path = settings.DATABRICKS_WAREHOUSE_PATH or "/sql/1.0/warehouses/00887ae543d50e2a"
+
         # Use token from environment variable (DATABRICKS_TOKEN secret)
         if not settings.DATABRICKS_TOKEN:
             raise ValueError("DATABRICKS_TOKEN environment variable must be set")
         self.access_token = settings.DATABRICKS_TOKEN
+
+        # Catalog and schema - can be made configurable if needed
         self.catalog = "arao"
         self.schema = "metadata_manager"
 
         logger.info(f"DatabricksConfig: server_hostname = {self.server_hostname}")
-        if settings.DATABRICKS_TOKEN:
-            logger.info("DatabricksConfig: Using DATABRICKS_TOKEN from environment")
-        else:
-            logger.info("DatabricksConfig: Using hardcoded token (fallback for local dev)")
+        logger.info("DatabricksConfig: Using DATABRICKS_TOKEN from environment")
     
     def get_sql_connection_params(self) -> Dict[str, Any]:
         """Get connection parameters for databricks.sql connector"""

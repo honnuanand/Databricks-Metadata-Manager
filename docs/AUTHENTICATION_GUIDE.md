@@ -470,63 +470,82 @@ psql "postgresql://neondb_owner:***@ep-lively-mud-a4u1i94u.us-east-1.aws.neon.te
 
 ### Latest Test Run
 
-**Date:** 2025-10-29
-**Total Tests:** 19
-**Passed:** 11 (58%)
-**Failed:** 8 (42%)
+**Date:** 2025-10-30
+**Total Tests:** 21
+**Passed:** 21 (100%) ✅
+**Failed:** 0
 
-**Passing Tests:** ✅
+**All Tests Passing:** ✅
+
+**Authentication Tests (12/12):**
 - Health Check - Database Status
 - Login with Admin User
 - Login with Approver User
 - Login with Regular User
 - Reject Invalid Credentials
+- Get Current User Info
 - Verify Admin Permissions
 - Verify Approver Permissions
 - Verify User Permissions
+- Get Current User with Valid Token
+- Token Persists Across Requests
+- Each User Gets Their Own Token
 - Reject Invalid Token
 - Reject Expired Token
 - Login Returns Refresh Token
 
-**Failing Tests:** ❌
-- Get Current User Info (401)
-- Get Current User with Valid Token (401)
-- Token Persists Across Requests (401)
-- Each User Gets Their Own Token (401)
-- List Catalogs (500)
-- Get Catalog Details (500)
-- List Schemas in Catalog (500)
-- Regular User Can Browse Catalogs (500)
+**Catalog Tests (9/9):**
+- List Catalogs
+- Get Catalog Details
+- List Schemas in Catalog
+- List Tables in Schema
+- Get Table Details
+- Get Column Details
+- Search Catalogs
+- Filter by Catalog Type
+- Regular User Can Browse Catalogs
 
 **Analysis:**
-- Core authentication works (login, password verification, permissions)
-- `/me` endpoint has token verification issues (needs investigation)
-- Catalog endpoints failing (likely DATABRICKS_TOKEN not configured)
+- All authentication flows working correctly
+- Token generation and verification working
+- All catalog browsing functionality working
+- FastAPI trailing slash issues resolved
 
 ---
 
-## Future Improvements
+## Lessons Learned
 
-1. **Investigate `/me` endpoint failures**
-   - Add more detailed logging to token verification
-   - Compare token format between local and production
-   - Verify SECRET_KEY matches between generation and verification
+### Critical Issues Resolved
 
-2. **Configure Databricks Token**
-   - Set DATABRICKS_TOKEN in secrets for catalog access
-   - Test Databricks SQL warehouse connectivity
+1. **FastAPI Trailing Slash Behavior** ✅
+   - Base routes (`@router.get("/")`) expect trailing slash
+   - Parameterized routes (`@router.get("/{param}")`) expect NO trailing slash
+   - Solution: Updated frontend API calls to match FastAPI expectations
 
-3. **Add Refresh Token Flow**
+2. **Duplicate Startup Event Handlers** ✅
+   - Only the last `@app.on_event("startup")` executes
+   - Solution: Merged all startup logic into single handler
+
+3. **Hardcoded API Tokens** ✅
+   - Pre-commit hooks detected hardcoded Databricks tokens
+   - Solution: Moved all tokens to environment variables
+
+4. **Database Connection Pooling** ✅
+   - Serverless Neon database required NullPool strategy
+   - Solution: Implemented singleton engine with connection management
+
+### Future Improvements
+
+1. **Add Refresh Token Flow**
    - Implement automatic token refresh on 401
    - Add refresh endpoint tests
 
-4. **Add Log Collection**
-   - Capture frontend console logs in test failures
-   - Include backend logs in test reports
-   - Automatic log aggregation for debugging
+2. **Enhanced Monitoring**
+   - Capture detailed metrics on token usage
+   - Track authentication failures and patterns
 
-5. **Improve Error Messages**
-   - More specific error details for 401/403
+3. **Improved Error Messages**
+   - More specific error details for authentication failures
    - Include troubleshooting hints in error responses
 
 ---
@@ -540,6 +559,6 @@ psql "postgresql://neondb_owner:***@ep-lively-mud-a4u1i94u.us-east-1.aws.neon.te
 
 ---
 
-**Last Updated:** 2025-10-29
-**Version:** 1.0.0
-**Status:** Production (with known issues)
+**Last Updated:** 2025-10-30
+**Version:** 1.0.1
+**Status:** Production (all tests passing ✅)

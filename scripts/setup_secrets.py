@@ -46,7 +46,12 @@ def add_secret(scope, key, value):
         return False
 
 def main():
-    scope_name = "metadata-manager-secrets"
+    import argparse
+    parser = argparse.ArgumentParser(description="Setup secrets for Metadata Manager")
+    parser.add_argument("--scope", default="metadata-manager-secrets", help="Secret scope name")
+    args = parser.parse_args()
+
+    scope_name = args.scope
 
     print("🔐 Setting up secrets for Metadata Manager")
     print("=" * 60)

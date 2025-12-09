@@ -1,0 +1,31 @@
+-- Metadata Manager Permission Grants
+-- Generated from template with configurable values
+-- Catalog: {{ catalog }}
+-- Schema: {{ schema_primary }}
+-- Test Schema: {{ schema_test }}
+-- Service Principal: {{ service_principal }}
+
+-- ============================================================================
+-- GRANT PERMISSIONS TO APP SERVICE PRINCIPAL
+-- ============================================================================
+
+-- Note: The service principal name is typically the app name.
+-- After deployment, run SELECT current_user() from the app to find the actual name.
+-- The format may be: "metadata-manager" or "workspace-id-metadata-manager"
+
+-- Grant USE on catalog
+GRANT USE CATALOG ON CATALOG {{ catalog }} TO `{{ service_principal }}`;
+
+-- Grant USE on schemas
+GRANT USE SCHEMA ON SCHEMA {{ catalog }}.{{ schema_primary }} TO `{{ service_principal }}`;
+{% if create_test_schema %}
+GRANT USE SCHEMA ON SCHEMA {{ catalog }}.{{ schema_test }} TO `{{ service_principal }}`;
+{% endif %}
+
+-- Grant SELECT on test tables (read-only for test data)
+{% if create_test_schema %}
+GRANT SELECT ON SCHEMA {{ catalog }}.{{ schema_test }} TO `{{ service_principal }}`;
+{% endif %}
+
+-- Grant ALL on metadata_manager tables (app needs to read/write)
+GRANT ALL PRIVILEGES ON SCHEMA {{ catalog }}.{{ schema_primary }} TO `{{ service_principal }}`;

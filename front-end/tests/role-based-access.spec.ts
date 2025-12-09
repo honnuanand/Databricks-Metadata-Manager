@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Role-Based Access Control Tests', () => {
-  const baseURL = 'http://localhost:5173';
+  const baseURL = 'http://localhost:4001';
   
   // Helper function to login as specific user
   async function loginAs(page: any, userType: 'suggest_only' | 'approver' | 'admin') {

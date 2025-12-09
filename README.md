@@ -2,6 +2,10 @@
 
 A comprehensive web application for collaborative metadata management in Databricks, featuring comment suggestions, approval workflows, and audit logging.
 
+**Repository**: https://github.com/honnuanand/Databricks-Metadata-Manager
+
+**Status**: ✅ All 21/21 tests passing
+
 ## 🚀 Features
 
 ### Core Functionality
@@ -32,18 +36,97 @@ A comprehensive web application for collaborative metadata management in Databri
 
 ## 🛠️ Installation
 
-### Quick Start with Docker
+### Unified Installer (Recommended)
+
+The unified installer handles complete platform installation on a new Databricks workspace with a single command:
+
+```bash
+# Full interactive installation
+python install.py
+
+# Or with a configuration file
+python install.py --config install_config.yaml
+```
+
+The installer will:
+1. Run pre-flight checks (Databricks CLI, Node.js, Python dependencies)
+2. Prompt for missing credentials (Databricks token, warehouse ID, database URL)
+3. Create Databricks secret scope and store all secrets
+4. Create Unity Catalog schemas and tables
+5. Grant permissions to the service principal
+6. Run PostgreSQL migrations and seed users
+7. Build frontend and deploy to Databricks Apps
+8. Generate verification report
+
+#### Installer Options
+
+```bash
+# Generate a configuration template
+python install.py --init-config
+
+# Dry run - validate without making changes
+python install.py --dry-run
+
+# Run only specific steps
+python install.py --only secrets,schemas,postgres
+
+# Skip specific steps
+python install.py --skip deploy
+
+# Verbose output
+python install.py --verbose
+
+# Override specific settings via CLI
+python install.py --catalog my-catalog --scope my-secrets
+```
+
+#### Configuration File
+
+Create `install_config.yaml` from the template:
+
+```yaml
+databricks:
+  host: "https://your-workspace.cloud.databricks.com"
+  warehouse_id: "abc123def456"  # SQL Warehouse ID
+
+catalog:
+  name: "my_catalog"
+  schemas:
+    primary: "metadata_manager"
+    test: "metadata_test"
+
+secrets:
+  scope_name: "my-app-secrets"
+
+service_principal:
+  name: "metadata-manager"
+
+database:
+  run_migrations: true
+  seed_data: true
+
+deployment:
+  app_name: "metadata-manager"
+```
+
+See `install_config.yaml.example` for all available options.
+
+---
+
+### Quick Start with Docker (Local Development)
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/honnuanand/Databricks-Metadata-Manager.git
 cd metadata-manager
 ```
 
-2. Create environment file:
+2. Set up environment variables:
 ```bash
-cp backend/.env.example backend/.env
-# Edit backend/.env with your Databricks credentials
+# IMPORTANT: Never hardcode tokens in code files
+export DATABRICKS_TOKEN="your-databricks-token"
+export DATABRICKS_HOST="https://your-workspace.databricks.com"
+export DATABASE_URL="postgresql://user:pass@host/db"
 ```
 
 3. Start the application:
@@ -124,13 +207,13 @@ ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# Databricks
+# Databricks (NEVER hardcode tokens in code!)
 DATABRICKS_HOST=https://your-workspace.databricks.com
-DATABRICKS_TOKEN=your-databricks-token
+DATABRICKS_TOKEN=your-databricks-token  # Use environment variable
 
 # Application
 DEBUG=True
-CORS_ORIGINS=http://localhost:5173
+CORS_ORIGINS=http://localhost:4001
 ```
 
 ### Databricks Schema Setup
@@ -138,35 +221,33 @@ CORS_ORIGINS=http://localhost:5173
 Initialize the metadata tracking schema in Databricks:
 
 ```bash
-cd databricks
-python initialize_databricks_schema.py
+# Set environment variables first
+export DATABRICKS_TOKEN="your-token"
+export DATABRICKS_HOST="https://your-workspace.cloud.databricks.com"
+
+# Run the schema creation script
+python databricks/create_schema_sql.py
 ```
 
-Or run the SQL script directly:
-```sql
--- Run databricks/setup_metadata_schema.sql in your Databricks SQL workspace
-```
+This will create the `arao.metadata_manager` schema with:
+- `users` table with test users
+- `comment_suggestions` table for tracking comment changes
+- `approvals` table for approval workflow
+- `audit_logs` table for audit trail
 
 ## 👥 User Roles
 
-### Test Users (Development)
+### Test Users
 
-The application includes a development user switcher and pre-configured test users:
+The application includes pre-configured test users:
 
-| Username | Password | Role | Permissions |
-|----------|----------|------|-------------|
-| john_suggest | password123 | Suggest Only | Browse catalog, suggest comments |
-| jane_approver | password123 | Approver | Suggest + approve/reject comments |
-| admin_user | admin123 | Admin | Full system access |
-| alice_suggest | password123 | Suggest Only | Browse catalog, suggest comments |
-| bob_approver | password123 | Approver | Suggest + approve/reject comments |
+| Email | Password | Role | Permissions |
+|-------|----------|------|-------------|
+| admin@example.com | admin123 | admin | Full system access including user management |
+| approver@example.com | approver123 | approver | Can suggest and approve/reject comments |
+| user@example.com | user123 | suggest_only | Can browse catalog and suggest comments |
 
-### Creating Test Users
-
-Via API endpoint (development mode):
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/dev/create-test-users
-```
+Test users are automatically created when the backend starts up if they don't exist.
 
 ## 📱 Using the Application
 
@@ -197,6 +278,20 @@ Navigate to http://localhost:4001 and login with test credentials.
 
 ```
 metadata-manager/
+├── install.py               # Unified installer (main entry point)
+├── install_config.yaml.example  # Configuration template
+├── installer/               # Installer package
+│   ├── config.py           # Configuration management
+│   ├── validators.py       # Input validation
+│   ├── preflight.py        # Pre-flight checks
+│   ├── secrets_manager.py  # Databricks secrets operations
+│   ├── databricks_schema.py # Unity Catalog schema setup
+│   ├── postgres_setup.py   # PostgreSQL/Alembic setup
+│   ├── deployment.py       # App build and deployment
+│   ├── verification.py     # Installation verification
+│   └── templates/          # SQL templates (Jinja2)
+│       ├── schema.sql.j2   # Parameterized schema DDL
+│       └── grants.sql.j2   # Parameterized permissions
 ├── backend/                 # FastAPI backend
 │   ├── app/
 │   │   ├── api/            # API endpoints
@@ -212,12 +307,24 @@ metadata-manager/
 │   │   ├── components/     # React components
 │   │   ├── pages/          # Page components
 │   │   ├── services/       # API services
-│   │   └── store/          # Redux store
+│   │   ├── store/          # Redux store
+│   │   └── testing/        # In-app test runner
+│   ├── tests/              # Playwright E2E tests
 │   └── package.json
-├── databricks/             # Databricks setup scripts
+├── databricks/             # Databricks schema setup scripts (legacy)
+├── scripts/                # Setup and utility scripts
+│   ├── setup_secrets.py    # Secret scope setup
+│   ├── setup_database.py   # Database initialization
+│   └── grant_permissions.py # Service principal permissions
+├── docs/                   # Documentation
+│   ├── AUTHENTICATION_GUIDE.md
+│   ├── DEPLOYMENT.md
+│   ├── LOGIN_GUIDE.md
+│   └── NEON_SETUP.md
 ├── product/                # Product documentation
 │   ├── PRD.md             # Product Requirements
 │   └── TDD.md             # Technical Design
+├── deploy_to_databricks.py # Deployment script (for updates)
 └── docker-compose.yml      # Docker orchestration
 ```
 
@@ -231,10 +338,17 @@ The application integrates with Databricks to:
 
 ### Required Permissions
 
-Your Databricks service principal needs:
-- SELECT on target catalogs/schemas
-- MODIFY permissions to update comments
-- CREATE SCHEMA permission for metadata tracking
+The Databricks Apps service principal needs these Unity Catalog permissions:
+
+| Permission | Target | Purpose |
+|------------|--------|---------|
+| `USE CATALOG` | Catalog (e.g., `arao`) | Access the catalog |
+| `USE SCHEMA` | `metadata_manager` schema | Access app tables |
+| `ALL PRIVILEGES` | `metadata_manager` schema | Read/write app data |
+| `USE SCHEMA` | `metadata_test` schema | Access test data |
+| `SELECT` | `metadata_test` schema | Read test tables |
+
+**Note**: After deployment, run `python scripts/grant_permissions.py` to grant these permissions to the service principal. See [Post-Deployment: Service Principal Permissions](#post-deployment-service-principal-permissions) for details.
 
 ## 🔍 API Documentation
 
@@ -249,21 +363,27 @@ Key endpoints:
 - `/api/v1/approvals/` - Approval workflow
 - `/api/v1/users/` - User management
 
-## 🧪 Development
+## 🧪 Testing
 
-### Running Tests
+### In-App Test Runner
 
-Backend tests:
+The application includes a comprehensive test runner accessible at `/test-runner`:
+- 21/21 tests passing (12 authentication tests + 9 catalog tests)
+- Real-time test execution with progress indicators
+- Browser-based integration tests
+
 ```bash
-cd backend
-pytest
+# Access at: http://localhost:4001/test-runner
 ```
 
-Frontend tests:
+### Playwright E2E Tests
+
 ```bash
 cd front-end
-npm test
+npm run test:playwright:catalog  # Run catalog exploration tests
 ```
+
+**Note**: All tests are passing ✅
 
 ### Database Migrations
 
@@ -274,17 +394,99 @@ alembic revision --autogenerate -m "Description"
 alembic upgrade head
 ```
 
-### Building for Production
+### Deploying to Databricks
 
-Backend:
+#### Option 1: Unified Installer (Recommended for New Deployments)
+
+For a complete fresh installation on a new Databricks workspace:
+
 ```bash
-docker build -t metadata-manager-backend ./backend
+python install.py
 ```
 
-Frontend:
+This handles everything: secrets, schemas, database setup, and deployment.
+
+#### Option 2: Deploy Script (For Updates/Redeployments)
+
+For updating an existing deployment:
+
 ```bash
-cd front-end
-npm run build
+# Basic deployment
+python deploy_to_databricks.py --skip-secrets
+
+# Hard redeploy (delete and recreate app)
+python deploy_to_databricks.py --hard-redeploy --skip-secrets
+
+# Use custom secret scope
+python deploy_to_databricks.py --secret-scope my-custom-scope
+
+# Custom app name
+python deploy_to_databricks.py --app-name my-metadata-manager
+```
+
+The deployment script will:
+1. Build the React frontend
+2. Copy static files to backend
+3. Package and upload to Databricks workspace
+4. Deploy as a Databricks App
+
+See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed instructions.
+
+#### Post-Deployment: Service Principal Permissions
+
+After deploying the app, you need to grant Unity Catalog permissions to the service principal that runs the app. The service principal name is automatically assigned by Databricks and can be discovered by:
+
+1. **Check App Logs**: Go to Databricks Apps > metadata-manager > Logs
+2. **Query Current User**: Access `https://your-app-url/api/v1/debug/current-user` in the browser
+
+Once you have the service principal name, grant permissions using the helper script:
+
+```bash
+# Interactive mode - prompts for service principal name
+python scripts/grant_permissions.py
+
+# Specify service principal directly
+python scripts/grant_permissions.py --principal "metadata-manager"
+
+# Use custom catalog
+python scripts/grant_permissions.py --principal "app-xyz metadata-manager" --catalog my_catalog
+
+# Dry run - show grants without executing
+python scripts/grant_permissions.py --principal "metadata-manager" --dry-run
+```
+
+The script grants these permissions:
+- `USE CATALOG` on the catalog
+- `USE SCHEMA` on `metadata_manager` and `metadata_test` schemas
+- `ALL PRIVILEGES` on `metadata_manager` schema (for read/write)
+- `SELECT` on `metadata_test` schema (read-only for sample data)
+
+#### Required Secrets
+
+The application requires these secrets in the Databricks secret scope:
+
+| Secret Key | Description |
+|------------|-------------|
+| `databricks-token` | Databricks PAT token for API access |
+| `databricks-host` | Workspace URL (e.g., https://workspace.cloud.databricks.com) |
+| `secret-key` | JWT signing key for authentication |
+| `database-url` | Neon PostgreSQL connection string |
+
+Setup secrets manually:
+```bash
+# Create scope
+databricks secrets create-scope my-scope
+
+# Add secrets
+databricks secrets put-secret my-scope databricks-token --string-value "dapi..."
+databricks secrets put-secret my-scope databricks-host --string-value "https://..."
+databricks secrets put-secret my-scope secret-key --string-value "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+databricks secrets put-secret my-scope database-url --string-value "postgresql://..."
+```
+
+Or use the setup script:
+```bash
+python scripts/setup_secrets.py --scope my-scope
 ```
 
 ## 📈 Monitoring
@@ -297,8 +499,9 @@ The application tracks:
 
 View metrics in Databricks:
 ```sql
-SELECT * FROM anand_rao.metadata_manager.v_user_activity;
-SELECT * FROM anand_rao.metadata_manager.v_coverage_report;
+SELECT * FROM arao.metadata_manager.v_user_activity;
+SELECT * FROM arao.metadata_manager.comment_suggestions;
+SELECT * FROM arao.metadata_manager.audit_logs;
 ```
 
 ## 🤝 Contributing
@@ -316,20 +519,21 @@ SELECT * FROM anand_rao.metadata_manager.v_coverage_report;
 ## 🆘 Support
 
 For issues and questions:
-- Check the [documentation](./product/)
-- Review existing issues
-- Create a new issue with details
+- Check the [documentation](./docs/)
+- Review [product documentation](./product/)
+- Create an issue on [GitHub](https://github.com/honnuanand/Databricks-Metadata-Manager/issues)
 
 ## 🚦 Status
 
 - ✅ Core functionality complete
-- ✅ User authentication and roles
-- ✅ Catalog browsing
+- ✅ User authentication and roles (PostgreSQL/Neon)
+- ✅ Catalog browsing with Databricks Unity Catalog
 - ✅ Comment management
 - ✅ Approval workflow
-- ✅ Databricks integration
-- ✅ Development tools
-- 🔄 Production deployment guides (in progress)
+- ✅ Databricks integration and deployment
+- ✅ Comprehensive test suite (21/21 passing)
+- ✅ In-app test runner
+- ✅ Security hardening (no hardcoded tokens)
 
 ---
 

@@ -31,11 +31,12 @@ class Settings(BaseSettings):
             return v
         return []
     
-    # Databricks
-    DATABRICKS_HOST: Optional[str] = "https://e2-demo-field-eng.cloud.databricks.com"
-    DATABRICKS_TOKEN: Optional[str] = None
-    DATABRICKS_CLIENT_ID: Optional[str] = None
-    DATABRICKS_CLIENT_SECRET: Optional[str] = None
+    # Databricks - Set via environment variables (no hardcoded defaults)
+    DATABRICKS_HOST: Optional[str] = None  # Required: set via DATABRICKS_HOST env var
+    DATABRICKS_TOKEN: Optional[str] = None  # Required for local dev: set via DATABRICKS_TOKEN env var
+    DATABRICKS_CLIENT_ID: Optional[str] = None  # Used by Databricks Apps for OAuth
+    DATABRICKS_CLIENT_SECRET: Optional[str] = None  # Used by Databricks Apps for OAuth
+    DATABRICKS_WAREHOUSE_PATH: Optional[str] = None  # SQL warehouse HTTP path
     
     # Email (optional)
     SMTP_HOST: Optional[str] = None
