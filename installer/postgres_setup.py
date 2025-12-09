@@ -1,5 +1,10 @@
 """
-PostgreSQL/Neon database setup for Metadata Manager installer.
+PostgreSQL database setup for Metadata Manager installer.
+
+Supports:
+- Databricks Lakebase (recommended for production)
+- Neon PostgreSQL (legacy)
+- Local PostgreSQL (development)
 
 Handles:
 - Database connectivity testing
@@ -25,7 +30,10 @@ class MigrationResult:
 
 
 class PostgresSetup:
-    """Manages PostgreSQL database setup and migrations"""
+    """Manages PostgreSQL database setup and migrations.
+
+    Supports both Databricks Lakebase and traditional PostgreSQL (Neon/local).
+    """
 
     # Fixed UUIDs for seed users (consistent across re-seeds)
     SEED_USERS = [
@@ -58,8 +66,30 @@ class PostgresSetup:
         },
     ]
 
-    def __init__(self, database_url: str, backend_path: str = None, verbose: bool = False):
-        self.database_url = database_url
+    def __init__(
+        self,
+        database_url: str = None,
+        backend_path: str = None,
+        verbose: bool = False,
+        # Lakebase configuration (alternative to database_url)
+        lakebase_host: str = None,
+        lakebase_port: int = 5432,
+        lakebase_database: str = "postgres",
+        lakebase_user: str = None,
+        lakebase_password: str = None,
+    ):
+        # Build database URL from Lakebase config if provided
+        if lakebase_host and lakebase_user and lakebase_password:
+            self.database_url = (
+                f"postgresql://{lakebase_user}:{lakebase_password}"
+                f"@{lakebase_host}:{lakebase_port}"
+                f"/{lakebase_database}?sslmode=require"
+            )
+            self.is_lakebase = True
+        else:
+            self.database_url = database_url
+            self.is_lakebase = False
+
         self.backend_path = backend_path or str(Path(__file__).parent.parent / "backend")
         self.verbose = verbose
         self._engine = None
@@ -87,7 +117,8 @@ class PostgresSetup:
                 result = conn.execute(text("SELECT 1"))
                 result.fetchone()
 
-            return True, "Connected to PostgreSQL successfully"
+            db_type = "Lakebase" if self.is_lakebase else "PostgreSQL"
+            return True, f"Connected to {db_type} successfully"
         except Exception as e:
             return False, f"Connection failed: {str(e)}"
 

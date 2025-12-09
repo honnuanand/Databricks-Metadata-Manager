@@ -53,13 +53,42 @@ secrets:
   scope_name: "metadata-manager-secrets"
 
 # ============================================================================
-# NEON POSTGRESQL CONFIGURATION
+# DATABASE CONFIGURATION
 # ============================================================================
+# Supports: Databricks Lakebase (recommended), Neon PostgreSQL, or local PostgreSQL
 database:
-  # PostgreSQL connection URL - leave empty to be prompted securely
-  # Or set DATABASE_URL environment variable
-  # Format: postgresql://user:password@host/database?sslmode=require
-  # url: ""
+  # Database provider: "lakebase" or "postgres"
+  # - lakebase: Use Databricks Lakebase (recommended for production)
+  # - postgres: Use Neon PostgreSQL or local PostgreSQL (legacy)
+  provider: "lakebase"
+
+  # --- Lakebase Configuration (when provider: "lakebase") ---
+  lakebase:
+    # Lakebase instance hostname
+    # Example: your-instance-id.lakebase.cloud.databricks.com
+    host: ""
+
+    # Lakebase port (default: 5432)
+    port: 5432
+
+    # Database name (default: postgres)
+    database: "postgres"
+
+    # Application role username
+    # Create this role in Lakebase with: CREATE ROLE app_user LOGIN PASSWORD 'xxx';
+    user: "metadata_manager_app"
+
+    # Password - leave empty to be prompted securely
+    # Or set LAKEBASE_PASSWORD environment variable
+    # password: ""
+
+  # --- PostgreSQL Configuration (when provider: "postgres") ---
+  # Legacy support for Neon PostgreSQL or local development
+  postgres:
+    # PostgreSQL connection URL - leave empty to be prompted securely
+    # Or set DATABASE_URL environment variable
+    # Format: postgresql://user:password@host/database?sslmode=require
+    # url: ""
 
   # Run Alembic database migrations
   run_migrations: true
