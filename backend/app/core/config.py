@@ -16,9 +16,13 @@ class Settings(BaseSettings):
     # Lakebase Configuration (preferred for production)
     LAKEBASE_HOST: Optional[str] = None
     LAKEBASE_PORT: int = 5432
-    LAKEBASE_DATABASE: str = "postgres"
+    LAKEBASE_DATABASE: str = "databricks_postgres"
     LAKEBASE_USER: Optional[str] = None
     LAKEBASE_PASSWORD: Optional[str] = None
+    # Lakebase instance name (for OAuth token generation)
+    LAKEBASE_INSTANCE: Optional[str] = None
+    # Use OAuth instead of static password
+    LAKEBASE_USE_OAUTH: bool = False
 
     @computed_field
     @property
@@ -26,19 +30,42 @@ class Settings(BaseSettings):
         """Returns the appropriate database URL based on configuration.
 
         Priority:
-        1. Lakebase (if LAKEBASE_HOST is set)
-        2. Legacy DATABASE_URL (for Neon or local dev)
-        3. Default local PostgreSQL
+        1. Lakebase with OAuth (if LAKEBASE_USE_OAUTH is True)
+        2. Lakebase with password (if LAKEBASE_HOST and LAKEBASE_PASSWORD set)
+        3. Legacy DATABASE_URL (for Neon or local dev)
+        4. Default local PostgreSQL
         """
+        # Lakebase with OAuth
+        if self.LAKEBASE_USE_OAUTH and self.LAKEBASE_HOST and self.LAKEBASE_USER:
+            from app.core.lakebase_auth import lakebase_auth
+            if self.LAKEBASE_INSTANCE:
+                lakebase_auth.configure(self.LAKEBASE_INSTANCE)
+            return lakebase_auth.get_connection_string(
+                host=self.LAKEBASE_HOST,
+                database=self.LAKEBASE_DATABASE,
+                user=self.LAKEBASE_USER,
+                port=self.LAKEBASE_PORT
+            )
+
+        # Lakebase with static password
         if self.LAKEBASE_HOST and self.LAKEBASE_USER and self.LAKEBASE_PASSWORD:
             return (
                 f"postgresql://{self.LAKEBASE_USER}:{self.LAKEBASE_PASSWORD}"
                 f"@{self.LAKEBASE_HOST}:{self.LAKEBASE_PORT}"
                 f"/{self.LAKEBASE_DATABASE}?sslmode=require"
             )
+
+        # Legacy DATABASE_URL
         if self.DATABASE_URL:
             return self.DATABASE_URL
+
         return "postgresql://user:pass@localhost/dbname"
+
+    @computed_field
+    @property
+    def is_using_lakebase(self) -> bool:
+        """Check if Lakebase is configured."""
+        return bool(self.LAKEBASE_HOST)
 
     # Security
     SECRET_KEY: str = "LrM0Shhrw0MhIzRtQhbUF30o4dTjE4d5m6PRDZhGUPM"  # Default matches Databricks secret
