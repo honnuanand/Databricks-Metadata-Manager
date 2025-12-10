@@ -440,8 +440,12 @@ class MetadataManagerDeployer:
             f.write('  - name: DEBUG\n')
             f.write('    value: "False"\n')
 
-            # Lakebase Configuration (Password-based with native Postgres role)
+            # Lakebase Configuration
+            # LAKEBASE_INSTANCE is required for OAuth token generation
+            # LAKEBASE_HOST is the PostgreSQL hostname for connections
             f.write('  # Lakebase Database Configuration\n')
+            f.write('  - name: LAKEBASE_INSTANCE\n')
+            f.write('    value: "arao-lb"\n')
             f.write('  - name: LAKEBASE_HOST\n')
             f.write('    value: "instance-f2a8b56a-7fe2-4c9c-a0a3-7768594a50e5.database.cloud.databricks.com"\n')
             f.write('  - name: LAKEBASE_DATABASE\n')

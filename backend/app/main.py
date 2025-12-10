@@ -458,6 +458,9 @@ async def api_root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint with database connectivity test"""
+    from app.db.session import is_using_oauth
+    from app.db.lakebase_oauth import get_lakebase_oauth_manager
+
     # Use effective_database_url which handles both Lakebase and legacy DATABASE_URL
     effective_url = settings.effective_database_url
     default_url = "postgresql://user:pass@localhost/dbname"
@@ -472,6 +475,20 @@ async def health_check():
         except:
             db_url_info = "configured_but_parse_failed"
 
+    # Check OAuth status
+    using_oauth = False
+    oauth_token_expires_in = None
+    oauth_username = None
+    try:
+        using_oauth = is_using_oauth()
+        if using_oauth:
+            oauth_mgr = get_lakebase_oauth_manager()
+            if oauth_mgr:
+                oauth_token_expires_in = oauth_mgr.token_expires_in
+                oauth_username = oauth_mgr.get_username()
+    except Exception as e:
+        logger.warning(f"Could not get OAuth status: {e}")
+
     health_status = {
         "status": "healthy",
         "version": settings.APP_VERSION,
@@ -481,8 +498,14 @@ async def health_check():
         },
         "database_url_configured": bool(effective_url and effective_url != default_url),
         "database_url_info": db_url_info,
-        "using_lakebase": settings.is_using_lakebase
+        "using_lakebase": settings.is_using_lakebase,
+        "using_oauth": using_oauth,
     }
+
+    # Add OAuth details if using OAuth
+    if using_oauth:
+        health_status["oauth_token_expires_in"] = oauth_token_expires_in
+        health_status["oauth_username"] = oauth_username
 
     # Test database connectivity
     try:
