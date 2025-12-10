@@ -558,6 +558,117 @@ Example:
 postgresql://metadata_manager_app:YourSecurePassword123!@instance-xxxx.database.cloud.databricks.com:5432/databricks_postgres?sslmode=require
 ```
 
+### OAuth Token Authentication (Passwordless - Recommended)
+
+For production deployments, use **OAuth token authentication** instead of static passwords. This provides better security through short-lived tokens that auto-refresh.
+
+#### Benefits of OAuth
+
+- No long-lived passwords to manage or rotate
+- Tokens auto-expire after 1 hour
+- Better audit trail (service principal identity in logs)
+- Follows Databricks security best practices
+
+#### How OAuth Works
+
+1. **Service Principal Credentials**: When running in Databricks Apps, the app automatically has access to OAuth credentials via `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` environment variables.
+
+2. **Token Generation**: The app calls `WorkspaceClient().database.generate_database_credential()` to get a short-lived OAuth token (valid for 1 hour).
+
+3. **Auto-Refresh**: The `LakebaseOAuthManager` class automatically refreshes tokens 5 minutes before expiry.
+
+4. **Connection**: The app connects to Lakebase using:
+   - **Username**: Service principal's `client_id`
+   - **Password**: OAuth token
+
+#### Setup OAuth for Service Principal
+
+**Step 1: Get Service Principal Info**
+
+After deploying the app, find the service principal details:
+
+```bash
+# Check app info
+databricks apps get metadata-manager
+
+# Or query from the running app
+curl https://your-app-url/health
+```
+
+The health endpoint will show `oauth_username` (the SP's client_id).
+
+**Step 2: Create Postgres Role in Lakebase**
+
+Connect to Lakebase as admin and run the setup script:
+
+```bash
+# Using psql
+psql "postgresql://admin:password@instance-xxx.database.cloud.databricks.com:5432/databricks_postgres?sslmode=require" \
+  -f scripts/setup_lakebase_sp_oauth.sql
+```
+
+Or run these SQL commands manually:
+
+```sql
+-- Replace with your actual service principal client_id
+-- Example: 10922e0f-2688-4911-9fe0-4f35af5a563f
+
+-- 1. Create the databricks_auth extension
+CREATE EXTENSION IF NOT EXISTS databricks_auth;
+
+-- 2. Create Postgres role for the Service Principal
+SELECT databricks_create_role('YOUR_SP_CLIENT_ID', 'SERVICE_PRINCIPAL');
+
+-- 3. Grant permissions
+GRANT CONNECT ON DATABASE databricks_postgres TO "YOUR_SP_CLIENT_ID";
+GRANT USAGE ON SCHEMA public TO "YOUR_SP_CLIENT_ID";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "YOUR_SP_CLIENT_ID";
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "YOUR_SP_CLIENT_ID";
+
+-- 4. Set default privileges for future tables
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT ALL PRIVILEGES ON TABLES TO "YOUR_SP_CLIENT_ID";
+```
+
+**Step 3: Deploy with OAuth**
+
+The app automatically detects OAuth credentials when running in Databricks Apps. Deploy normally:
+
+```bash
+python deploy_to_databricks.py --hard-redeploy --skip-secrets
+```
+
+**Step 4: Verify OAuth is Working**
+
+Check the health endpoint:
+
+```bash
+curl https://your-app-url/health
+```
+
+You should see:
+```json
+{
+  "using_oauth": true,
+  "oauth_token_expires_in": 3500,
+  "oauth_username": "10922e0f-2688-4911-9fe0-4f35af5a563f"
+}
+```
+
+#### OAuth vs Password Authentication
+
+| Feature | OAuth | Password |
+|---------|-------|----------|
+| Token Lifetime | 1 hour (auto-refresh) | Never expires |
+| Secret Management | No secrets to store | Password in Databricks Secrets |
+| Audit Trail | SP identity logged | User account logged |
+| Setup Complexity | Requires Lakebase role | Simpler initial setup |
+| Recommended For | Production | Development/Testing |
+
+#### Fallback to Password
+
+If OAuth credentials are not available (e.g., running locally), the app automatically falls back to static password authentication using `DATABASE_URL` or the Lakebase secrets.
+
 ### Alternative: Legacy Neon PostgreSQL
 
 For backward compatibility, the app also supports Neon PostgreSQL via the `database-url` secret:
@@ -608,6 +719,7 @@ For issues and questions:
 - ✅ Comment management
 - ✅ Approval workflow
 - ✅ Databricks Apps deployment with OAuth
+- ✅ **Lakebase OAuth Token Authentication** (passwordless, auto-refresh)
 - ✅ Comprehensive test suite (21/21 passing)
 - ✅ In-app test runner
 - ✅ Security hardening (secrets in Databricks Secrets)
