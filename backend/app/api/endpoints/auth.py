@@ -143,7 +143,8 @@ async def debug_token_verification(token: str):
 
         # Step 1: Decode WITHOUT verification
         try:
-            unverified_payload = jwt.decode(token, options={"verify_signature": False})
+            # python-jose requires key argument even with verify_signature=False
+            unverified_payload = jwt.decode(token, key="", options={"verify_signature": False})
             debug_steps.append({"step": "unverified_decode", "status": "success", "payload": unverified_payload})
         except Exception as e:
             debug_steps.append({"step": "unverified_decode", "status": "failed", "error": str(e)})

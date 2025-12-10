@@ -369,28 +369,15 @@ class MetadataManagerDeployer:
                 else:
                     shutil.copy2(src, dst)
 
-        # Get secrets from Databricks
+        # Get secrets from Databricks (injected as direct values at deploy time)
         import json
         import base64
 
-        database_url = None
         secret_key = None
+        lakebase_password = None
+        databricks_token = None
 
         print(f"📦 Using secret scope: {self.secret_scope}")
-
-        # Get DATABASE_URL
-        try:
-            result = subprocess.run(
-                ['databricks', 'secrets', 'get-secret', self.secret_scope, 'database-url', '--output', 'json'],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            secret_data = json.loads(result.stdout)
-            database_url = base64.b64decode(secret_data['value']).decode('utf-8')
-            print(f"✅ Retrieved DATABASE_URL from secrets")
-        except Exception as e:
-            print(f"⚠️  Could not retrieve DATABASE_URL from secrets: {e}")
 
         # Get SECRET_KEY
         try:
@@ -406,14 +393,44 @@ class MetadataManagerDeployer:
         except Exception as e:
             print(f"⚠️  Could not retrieve SECRET_KEY from secrets: {e}")
 
+        # Get LAKEBASE_PASSWORD
+        try:
+            result = subprocess.run(
+                ['databricks', 'secrets', 'get-secret', self.secret_scope, 'lakebase-password', '--output', 'json'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            secret_data = json.loads(result.stdout)
+            lakebase_password = base64.b64decode(secret_data['value']).decode('utf-8')
+            print(f"✅ Retrieved LAKEBASE_PASSWORD from secrets")
+        except Exception as e:
+            print(f"⚠️  Could not retrieve LAKEBASE_PASSWORD from secrets: {e}")
+
+        # Get DATABRICKS_TOKEN for Unity Catalog access
+        try:
+            result = subprocess.run(
+                ['databricks', 'secrets', 'get-secret', self.secret_scope, 'databricks-token', '--output', 'json'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            secret_data = json.loads(result.stdout)
+            databricks_token = base64.b64decode(secret_data['value']).decode('utf-8')
+            print(f"✅ Retrieved DATABRICKS_TOKEN from secrets")
+        except Exception as e:
+            print(f"⚠️  Could not retrieve DATABRICKS_TOKEN from secrets: {e}")
+
         # Create app.yaml for Databricks Apps
+        # Secrets are injected as direct values at deploy time (retrieved above)
         app_yaml_path = os.path.join(build_dir, "app.yaml")
         with open(app_yaml_path, 'w') as f:
             f.write('command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]\n')
             f.write('\n')
-            f.write('# Disable Databricks SSO to use custom authentication\n')
-            f.write('auth:\n')
-            f.write('  enabled: false\n')
+            f.write('# Allow anonymous access to the app (use custom JWT authentication)\n')
+            f.write('default_source_ip_permissions:\n')
+            f.write('  - action: ALLOW\n')
+            f.write('    ip_addresses: ["0.0.0.0/0"]\n')
             f.write('\n')
             f.write('env:\n')
             f.write('  - name: ENV\n')
@@ -426,31 +443,42 @@ class MetadataManagerDeployer:
             # Lakebase Configuration (Password-based with native Postgres role)
             f.write('  # Lakebase Database Configuration\n')
             f.write('  - name: LAKEBASE_HOST\n')
-            f.write(f'    valueFrom: {self.secret_scope}/lakebase-host\n')
+            f.write('    value: "instance-f2a8b56a-7fe2-4c9c-a0a3-7768594a50e5.database.cloud.databricks.com"\n')
             f.write('  - name: LAKEBASE_DATABASE\n')
-            f.write(f'    valueFrom: {self.secret_scope}/lakebase-database\n')
+            f.write('    value: "databricks_postgres"\n')
             f.write('  - name: LAKEBASE_USER\n')
             f.write('    value: "metadata_manager_app"\n')
-            f.write('  - name: LAKEBASE_PASSWORD\n')
-            f.write(f'    valueFrom: {self.secret_scope}/lakebase-password\n')
             f.write('  - name: LAKEBASE_PORT\n')
             f.write('    value: "5432"\n')
 
-            # Legacy DATABASE_URL fallback (if needed)
-            if database_url:
-                f.write('  # Legacy DATABASE_URL (fallback)\n')
+            # Inject LAKEBASE_PASSWORD as direct value (retrieved from secrets at deploy time)
+            if lakebase_password:
+                f.write('  - name: LAKEBASE_PASSWORD\n')
+                f.write(f'    value: "{lakebase_password}"\n')
+                # Also set DATABASE_URL for backwards compatibility with existing code
+                db_url = f"postgresql://metadata_manager_app:{lakebase_password}@instance-f2a8b56a-7fe2-4c9c-a0a3-7768594a50e5.database.cloud.databricks.com:5432/databricks_postgres?sslmode=require"
                 f.write('  - name: DATABASE_URL\n')
-                f.write(f'    value: "{database_url}"\n')
+                f.write(f'    value: "{db_url}"\n')
+            else:
+                print("❌ LAKEBASE_PASSWORD not available - app may fail to connect to database")
 
-            # Inject SECRET_KEY as a value (not valueFrom) if we got it from secrets
+            # Inject SECRET_KEY as direct value (retrieved from secrets at deploy time)
             if secret_key:
                 f.write('  - name: SECRET_KEY\n')
                 f.write(f'    value: "{secret_key}"\n')
 
+            # Databricks configuration for Unity Catalog access
             f.write('  - name: DATABRICKS_HOST\n')
-            f.write(f'    valueFrom: {self.secret_scope}/databricks-host\n')
-            f.write('  - name: DATABRICKS_TOKEN\n')
-            f.write(f'    valueFrom: {self.secret_scope}/databricks-token\n')
+            f.write('    value: "https://fe-vm-leaps-fe.cloud.databricks.com"\n')
+            f.write('  - name: DATABRICKS_WAREHOUSE_PATH\n')
+            f.write('    value: "/sql/1.0/warehouses/2dc6b7aacc451bcd"\n')
+
+            # Inject DATABRICKS_TOKEN for Unity Catalog access
+            if databricks_token:
+                f.write('  - name: DATABRICKS_TOKEN\n')
+                f.write(f'    value: "{databricks_token}"\n')
+            else:
+                print("⚠️  DATABRICKS_TOKEN not available - catalog browsing may not work")
 
         print("✅ Backend packaged successfully")
         return True

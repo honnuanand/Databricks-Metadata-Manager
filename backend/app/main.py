@@ -195,6 +195,22 @@ comments_storage = [
     }
 ]
 
+# Helper function to get user role from username
+def get_user_role_from_username(username: str) -> str:
+    """Get the role for a given username"""
+    role_map = {
+        "john_suggest": "suggest_only",
+        "alice_suggest": "suggest_only",
+        "jane_approver": "approver",
+        "bob_approver": "approver",
+        "admin_user": "admin",
+        "admin": "admin",
+        "approver": "approver",
+        "testuser": "suggest_only"
+    }
+    return role_map.get(username, "suggest_only")
+
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -246,11 +262,23 @@ async def get_current_user_info_compat(current_user: User = Depends(get_current_
 
 # Add comments endpoints
 @app.get("/api/v1/comments")
-async def get_all_comments(current_user: User = Depends(get_current_active_user)):
-    """Get all comments (for audit log and admin views)"""
+async def get_all_comments(
+    status: str = None,
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get all comments (for audit log and admin views)
+
+    Optional query parameters:
+    - status: Filter by comment status (pending, approved, rejected, draft, applied)
+    """
+    # Filter by status if provided
+    filtered_comments = comments_storage
+    if status:
+        filtered_comments = [c for c in comments_storage if c.get("status") == status]
+
     # Enhance each comment with user role information
     enhanced_comments = []
-    for comment in comments_storage:
+    for comment in filtered_comments:
         enhanced_comment = comment.copy()
         # Add the role/authorization level of the user who created/approved/applied the comment
         enhanced_comment["created_by_role"] = get_user_role_from_username(comment.get("created_by", ""))
@@ -329,10 +357,6 @@ async def get_table_comments(catalog: str, schema: str, table: str):
     
     return table_comments
 
-@app.get("/api/v1/comments")
-async def list_comments():
-    """List all comments"""
-    return []
 
 @app.get("/api/v1/approvals/pending")
 async def get_pending_approvals():
@@ -434,12 +458,16 @@ async def api_root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint with database connectivity test"""
-    # Mask DATABASE_URL for security (show only host)
+    # Use effective_database_url which handles both Lakebase and legacy DATABASE_URL
+    effective_url = settings.effective_database_url
+    default_url = "postgresql://user:pass@localhost/dbname"
+
+    # Mask database URL for security (show only host)
     db_url_info = "not_configured"
-    if settings.DATABASE_URL:
+    if effective_url and effective_url != default_url:
         try:
             from urllib.parse import urlparse
-            parsed = urlparse(settings.DATABASE_URL)
+            parsed = urlparse(effective_url)
             db_url_info = f"{parsed.scheme}://***:***@{parsed.hostname}/{parsed.path.lstrip('/')}"
         except:
             db_url_info = "configured_but_parse_failed"
@@ -451,14 +479,15 @@ async def health_check():
             "auth_service": "available",
             "database": "unknown"
         },
-        "database_url_configured": bool(settings.DATABASE_URL and settings.DATABASE_URL != "postgresql://user:pass@localhost/dbname"),
-        "database_url_info": db_url_info
+        "database_url_configured": bool(effective_url and effective_url != default_url),
+        "database_url_info": db_url_info,
+        "using_lakebase": settings.is_using_lakebase
     }
 
     # Test database connectivity
     try:
         from sqlalchemy import create_engine, text
-        engine = create_engine(settings.DATABASE_URL, connect_args={"connect_timeout": 5})
+        engine = create_engine(effective_url, connect_args={"connect_timeout": 5})
         with engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM users"))
             user_count = result.scalar()

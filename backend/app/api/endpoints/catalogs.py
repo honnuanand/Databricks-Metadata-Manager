@@ -84,7 +84,12 @@ async def list_catalogs(
         logger.info(f"   📍 Workspace: {config.server_hostname}")
         logger.info(f"   📦 Default Catalog: {config.catalog}")
         logger.info(f"   📂 Default Schema: {config.schema}")
-        logger.info(f"   🔑 Token: {config.access_token[:20]}...")
+        if config.has_oauth:
+            logger.info(f"   🔑 Auth: OAuth (Databricks Apps)")
+        elif config.access_token:
+            logger.info(f"   🔑 Token: {config.access_token[:20]}...")
+        else:
+            logger.info(f"   🔑 Auth: None configured")
 
         logger.info("   Calling catalog_service.list_accessible_catalogs()...")
         catalogs = await catalog_service.list_accessible_catalogs(current_user.user_id)

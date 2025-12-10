@@ -14,6 +14,8 @@ class DatabricksConfig:
     """Databricks configuration for both SDK and SQL connections"""
 
     def __init__(self):
+        import os
+
         # Extract hostname from DATABRICKS_HOST (remove https:// prefix)
         databricks_host = settings.DATABRICKS_HOST
         if not databricks_host:
@@ -23,50 +25,76 @@ class DatabricksConfig:
         # Use warehouse path from environment variable, with fallback for backwards compatibility
         self.http_path = settings.DATABRICKS_WAREHOUSE_PATH or "/sql/1.0/warehouses/00887ae543d50e2a"
 
-        # Use token from environment variable (DATABRICKS_TOKEN secret)
-        if not settings.DATABRICKS_TOKEN:
-            raise ValueError("DATABRICKS_TOKEN environment variable must be set")
+        # Check if running in Databricks Apps with OAuth
+        self.has_oauth = bool(os.getenv('DATABRICKS_CLIENT_ID') and os.getenv('DATABRICKS_CLIENT_SECRET'))
+
+        # Token is optional when running with OAuth in Databricks Apps
         self.access_token = settings.DATABRICKS_TOKEN
+        if not self.access_token and not self.has_oauth:
+            raise ValueError("DATABRICKS_TOKEN environment variable must be set (or run in Databricks Apps with OAuth)")
 
         # Catalog and schema - can be made configurable if needed
         self.catalog = "arao"
         self.schema = "metadata_manager"
 
         logger.info(f"DatabricksConfig: server_hostname = {self.server_hostname}")
-        logger.info("DatabricksConfig: Using DATABRICKS_TOKEN from environment")
+        if self.has_oauth:
+            logger.info("DatabricksConfig: OAuth credentials detected (Databricks Apps)")
+        elif self.access_token:
+            logger.info("DatabricksConfig: Using DATABRICKS_TOKEN from environment")
     
     def get_sql_connection_params(self) -> Dict[str, Any]:
-        """Get connection parameters for databricks.sql connector"""
-        return {
+        """Get connection parameters for databricks.sql connector
+
+        Prefer OAuth when running in Databricks Apps (service principal auth).
+        Fall back to PAT token if OAuth not available.
+        """
+        params = {
             "server_hostname": self.server_hostname,
             "http_path": self.http_path,
-            "access_token": self.access_token
         }
+        # Prefer OAuth when running in Databricks Apps
+        if self.has_oauth:
+            logger.info("SQL connection using OAuth (Databricks Apps service principal)")
+            # Don't include access_token - let connector use OAuth from environment
+        elif self.access_token:
+            params["access_token"] = self.access_token
+            logger.info("SQL connection using PAT token authentication")
+        else:
+            logger.info("SQL connection: no auth configured")
+        return params
     
     def get_workspace_client(self) -> WorkspaceClient:
         """Get WorkspaceClient for catalog operations
 
-        Uses OAuth when running in Databricks Apps (client_id/secret available),
-        otherwise falls back to PAT token for local development.
+        Always uses PAT token when available (preferred for catalog operations).
+        Falls back to OAuth only if no token is provided.
         """
         import os
 
-        # Check if we're running in Databricks Apps with OAuth
-        has_oauth = bool(os.getenv('DATABRICKS_CLIENT_ID') and os.getenv('DATABRICKS_CLIENT_SECRET'))
+        if self.access_token:
+            logger.info("DatabricksConfig: Using PAT token authentication")
+            # Clear OAuth environment variables to prevent SDK auto-detection conflict
+            # The SDK will see both OAuth and PAT if we don't clear these
+            oauth_client_id = os.environ.pop('DATABRICKS_CLIENT_ID', None)
+            oauth_client_secret = os.environ.pop('DATABRICKS_CLIENT_SECRET', None)
+            if oauth_client_id:
+                logger.info("DatabricksConfig: Cleared DATABRICKS_CLIENT_ID to avoid OAuth/PAT conflict")
 
-        if has_oauth:
-            logger.info("DatabricksConfig: Using OAuth authentication (Databricks Apps SSO)")
-            # When OAuth credentials are present, don't provide a token
-            # The SDK will automatically use OAuth
+            return WorkspaceClient(
+                host=f"https://{self.server_hostname}",
+                token=self.access_token
+            )
+        elif self.has_oauth:
+            logger.info("DatabricksConfig: Using OAuth authentication (Databricks Apps)")
+            # When no token but OAuth credentials are present, let SDK use OAuth
             return WorkspaceClient(
                 host=f"https://{self.server_hostname}"
             )
         else:
-            logger.info("DatabricksConfig: Using PAT token authentication (local dev)")
-            # For local development, use PAT token
+            logger.warning("DatabricksConfig: No authentication configured!")
             return WorkspaceClient(
-                host=f"https://{self.server_hostname}",
-                token=self.access_token
+                host=f"https://{self.server_hostname}"
             )
 
 

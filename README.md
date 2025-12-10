@@ -470,23 +470,100 @@ The application requires these secrets in the Databricks secret scope:
 | `databricks-token` | Databricks PAT token for API access |
 | `databricks-host` | Workspace URL (e.g., https://workspace.cloud.databricks.com) |
 | `secret-key` | JWT signing key for authentication |
-| `database-url` | Neon PostgreSQL connection string |
+| `lakebase-password` | Password for Lakebase PostgreSQL user |
+| `lakebase-host` | Lakebase instance hostname |
+| `lakebase-user` | Lakebase database user |
+| `lakebase-database` | Lakebase database name |
 
-Setup secrets manually:
-```bash
-# Create scope
-databricks secrets create-scope my-scope
+### Lakebase Setup (Databricks PostgreSQL)
 
-# Add secrets
-databricks secrets put-secret my-scope databricks-token --string-value "dapi..."
-databricks secrets put-secret my-scope databricks-host --string-value "https://..."
-databricks secrets put-secret my-scope secret-key --string-value "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-databricks secrets put-secret my-scope database-url --string-value "postgresql://..."
+The application uses **Databricks Lakebase** (PostgreSQL-compatible database) for user authentication storage. Here's how to set it up:
+
+#### 1. Create a Lakebase Instance
+
+In Databricks workspace:
+1. Go to **Data** > **Create** > **PostgreSQL Database**
+2. Note the instance hostname (e.g., `instance-xxxx.database.cloud.databricks.com`)
+
+#### 2. Create the Application User
+
+Connect to Lakebase using the admin credentials and run:
+
+```sql
+-- Create the application user with a secure password
+CREATE USER metadata_manager_app WITH PASSWORD 'YourSecurePassword123!';
+
+-- Grant necessary permissions
+GRANT ALL PRIVILEGES ON DATABASE databricks_postgres TO metadata_manager_app;
+GRANT ALL PRIVILEGES ON SCHEMA public TO metadata_manager_app;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO metadata_manager_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO metadata_manager_app;
 ```
 
-Or use the setup script:
+#### 3. Store Credentials in Databricks Secrets
+
 ```bash
-python scripts/setup_secrets.py --scope my-scope
+# Create secret scope (if not exists)
+databricks secrets create-scope metadata-manager-secrets
+
+# Store Lakebase credentials
+databricks secrets put-secret metadata-manager-secrets lakebase-password
+# Enter your password when prompted (e.g., YourSecurePassword123!)
+
+databricks secrets put-secret metadata-manager-secrets lakebase-host --string-value "instance-xxxx.database.cloud.databricks.com"
+databricks secrets put-secret metadata-manager-secrets lakebase-user --string-value "metadata_manager_app"
+databricks secrets put-secret metadata-manager-secrets lakebase-database --string-value "databricks_postgres"
+
+# Store other required secrets
+databricks secrets put-secret metadata-manager-secrets databricks-token --string-value "dapi..."
+databricks secrets put-secret metadata-manager-secrets databricks-host --string-value "https://your-workspace.cloud.databricks.com"
+databricks secrets put-secret metadata-manager-secrets secret-key --string-value "$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+#### 4. Verify Secrets
+
+```bash
+databricks secrets list-secrets metadata-manager-secrets
+```
+
+Expected output:
+```
+Key                Last Updated Timestamp
+databricks-host    ...
+databricks-token   ...
+lakebase-database  ...
+lakebase-host      ...
+lakebase-password  ...
+lakebase-user      ...
+secret-key         ...
+```
+
+#### 5. Deploy the Application
+
+The deploy script automatically retrieves Lakebase credentials from secrets and constructs the DATABASE_URL:
+
+```bash
+python deploy_to_databricks.py --skip-secrets
+```
+
+#### Connection String Format
+
+The application constructs the DATABASE_URL as:
+```
+postgresql://<lakebase-user>:<lakebase-password>@<lakebase-host>:5432/<lakebase-database>?sslmode=require
+```
+
+Example:
+```
+postgresql://metadata_manager_app:YourSecurePassword123!@instance-xxxx.database.cloud.databricks.com:5432/databricks_postgres?sslmode=require
+```
+
+### Alternative: Legacy Neon PostgreSQL
+
+For backward compatibility, the app also supports Neon PostgreSQL via the `database-url` secret:
+
+```bash
+databricks secrets put-secret metadata-manager-secrets database-url --string-value "postgresql://user:pass@host.neon.tech/db"
 ```
 
 ## 📈 Monitoring
@@ -526,14 +603,14 @@ For issues and questions:
 ## 🚦 Status
 
 - ✅ Core functionality complete
-- ✅ User authentication and roles (PostgreSQL/Neon)
+- ✅ User authentication and roles (Databricks Lakebase PostgreSQL)
 - ✅ Catalog browsing with Databricks Unity Catalog
 - ✅ Comment management
 - ✅ Approval workflow
-- ✅ Databricks integration and deployment
+- ✅ Databricks Apps deployment with OAuth
 - ✅ Comprehensive test suite (21/21 passing)
 - ✅ In-app test runner
-- ✅ Security hardening (no hardcoded tokens)
+- ✅ Security hardening (secrets in Databricks Secrets)
 
 ---
 
