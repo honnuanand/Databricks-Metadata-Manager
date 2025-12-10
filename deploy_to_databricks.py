@@ -423,8 +423,22 @@ class MetadataManagerDeployer:
             f.write('  - name: DEBUG\n')
             f.write('    value: "False"\n')
 
-            # Inject DATABASE_URL as a value (not valueFrom) if we got it from secrets
+            # Lakebase Configuration (Password-based with native Postgres role)
+            f.write('  # Lakebase Database Configuration\n')
+            f.write('  - name: LAKEBASE_HOST\n')
+            f.write(f'    valueFrom: {self.secret_scope}/lakebase-host\n')
+            f.write('  - name: LAKEBASE_DATABASE\n')
+            f.write(f'    valueFrom: {self.secret_scope}/lakebase-database\n')
+            f.write('  - name: LAKEBASE_USER\n')
+            f.write('    value: "metadata_manager_app"\n')
+            f.write('  - name: LAKEBASE_PASSWORD\n')
+            f.write(f'    valueFrom: {self.secret_scope}/lakebase-password\n')
+            f.write('  - name: LAKEBASE_PORT\n')
+            f.write('    value: "5432"\n')
+
+            # Legacy DATABASE_URL fallback (if needed)
             if database_url:
+                f.write('  # Legacy DATABASE_URL (fallback)\n')
                 f.write('  - name: DATABASE_URL\n')
                 f.write(f'    value: "{database_url}"\n')
 

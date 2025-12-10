@@ -21,8 +21,17 @@ class Settings(BaseSettings):
     LAKEBASE_PASSWORD: Optional[str] = None
     # Lakebase instance name (for OAuth token generation)
     LAKEBASE_INSTANCE: Optional[str] = None
-    # Use OAuth instead of static password
+    # Use OAuth instead of static password (set to "true" to enable)
     LAKEBASE_USE_OAUTH: bool = False
+
+    @field_validator("LAKEBASE_USE_OAUTH", mode="before")
+    @classmethod
+    def parse_lakebase_oauth(cls, v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes")
+        return False
 
     @computed_field
     @property
