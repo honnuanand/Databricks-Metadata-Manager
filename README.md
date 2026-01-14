@@ -8,6 +8,50 @@ A comprehensive web application for collaborative metadata management in Databri
 
 ---
 
+## ✨ Features
+
+### Core Functionality
+- **Catalog Discovery**: Browse Databricks catalogs, schemas, tables, and columns
+- **Comment Management**: Suggest, edit, and manage metadata comments
+- **Approval Workflow**: Review and approve/reject comment suggestions
+- **User Roles**: Three distinct roles with different permissions
+  - **Suggest Only**: Can browse and suggest comments
+  - **Approver**: Can suggest and approve/reject comments
+  - **Admin**: Full system access including user management
+- **Audit Trail**: Complete logging of all actions
+- **Development User Switcher**: Easy role switching for testing
+
+### Technical Features
+- **Modern Stack**: FastAPI backend + React/Vite/MUI frontend
+- **Real-time Updates**: Responsive UI with Redux state management
+- **Databricks Integration**: Native SDK integration for catalog operations
+- **Docker Support**: Full containerization for easy deployment
+- **Type Safety**: TypeScript frontend with Pydantic validation
+
+---
+
+## 📊 Databricks Integration
+
+The application integrates with Databricks to:
+- Discover catalog entities (schemas, tables, columns)
+- Read existing comments
+- Apply approved comment changes
+- Track all changes in `metadata_manager` schema
+
+### Required Permissions
+
+The Databricks Apps service principal needs these Unity Catalog permissions:
+
+| Permission | Target | Purpose |
+|------------|--------|---------|
+| `USE CATALOG` | Catalog (e.g., `arao`) | Access the catalog |
+| `USE SCHEMA` | `metadata_manager` schema | Access app tables |
+| `ALL PRIVILEGES` | `metadata_manager` schema | Read/write app data |
+| `USE SCHEMA` | `metadata_test` schema | Access test data |
+| `SELECT` | `metadata_test` schema | Read test tables |
+
+---
+
 ## 🚀 Deploying to Databricks Apps
 
 > **Deploy** = Production deployment to Databricks Apps with Lakebase OAuth
@@ -59,26 +103,6 @@ python deploy_to_databricks.py --skip-secrets
 📖 **Full deployment guide**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 
 ---
-
-## ✨ Features
-
-### Core Functionality
-- **Catalog Discovery**: Browse Databricks catalogs, schemas, tables, and columns
-- **Comment Management**: Suggest, edit, and manage metadata comments
-- **Approval Workflow**: Review and approve/reject comment suggestions
-- **User Roles**: Three distinct roles with different permissions
-  - **Suggest Only**: Can browse and suggest comments
-  - **Approver**: Can suggest and approve/reject comments
-  - **Admin**: Full system access including user management
-- **Audit Trail**: Complete logging of all actions
-- **Development User Switcher**: Easy role switching for testing
-
-### Technical Features
-- **Modern Stack**: FastAPI backend + React/Vite/MUI frontend
-- **Real-time Updates**: Responsive UI with Redux state management
-- **Databricks Integration**: Native SDK integration for catalog operations
-- **Docker Support**: Full containerization for easy deployment
-- **Type Safety**: TypeScript frontend with Pydantic validation
 
 ## 📋 Prerequisites
 
@@ -383,28 +407,6 @@ metadata-manager/
 ├── deploy_to_databricks.py # Deployment script (for updates)
 └── docker-compose.yml      # Docker orchestration
 ```
-
-## 📊 Databricks Integration
-
-The application integrates with Databricks to:
-- Discover catalog entities (schemas, tables, columns)
-- Read existing comments
-- Apply approved comment changes
-- Track all changes in `metadata_manager` schema
-
-### Required Permissions
-
-The Databricks Apps service principal needs these Unity Catalog permissions:
-
-| Permission | Target | Purpose |
-|------------|--------|---------|
-| `USE CATALOG` | Catalog (e.g., `arao`) | Access the catalog |
-| `USE SCHEMA` | `metadata_manager` schema | Access app tables |
-| `ALL PRIVILEGES` | `metadata_manager` schema | Read/write app data |
-| `USE SCHEMA` | `metadata_test` schema | Access test data |
-| `SELECT` | `metadata_test` schema | Read test tables |
-
-**Note**: After deployment, run `python scripts/grant_permissions.py` to grant these permissions to the service principal. See [Post-Deployment: Service Principal Permissions](#post-deployment-service-principal-permissions) for details.
 
 ## 🔍 API Documentation
 
