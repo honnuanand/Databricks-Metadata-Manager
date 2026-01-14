@@ -51,20 +51,32 @@ class LakebaseOAuthManager:
         self._lock = Lock()
 
         # Check if OAuth credentials are available
-        self._has_oauth = bool(
+        # In Databricks Apps, we have CLIENT_ID but not CLIENT_SECRET (managed identity)
+        self._has_explicit_oauth = bool(
             os.environ.get('DATABRICKS_CLIENT_ID') and
             os.environ.get('DATABRICKS_CLIENT_SECRET')
         )
+        # CLIENT_ID alone means we're in Databricks Apps mode (managed identity)
+        self._has_client_id = bool(os.environ.get('DATABRICKS_CLIENT_ID'))
+        self._has_oauth = self._has_explicit_oauth or self._has_client_id
 
-        if self._has_oauth:
-            logger.info("LakebaseOAuthManager: OAuth credentials detected (SP mode)")
+        if self._has_explicit_oauth:
+            logger.info("LakebaseOAuthManager: Explicit OAuth credentials detected (SP mode)")
+        elif self._has_client_id:
+            logger.info("LakebaseOAuthManager: Client ID detected (Databricks Apps mode)")
         else:
             logger.info("LakebaseOAuthManager: No OAuth credentials, will use PAT token if available")
 
     @property
     def is_oauth_available(self) -> bool:
-        """Check if OAuth authentication is available"""
+        """Check if Service Principal OAuth authentication is available."""
         return self._has_oauth
+
+    @property
+    def can_connect(self) -> bool:
+        """Check if any authentication method is available to connect to Lakebase."""
+        # OAuth SP, PAT token, or CLI auth all work
+        return True  # If we got this far, we have some auth method
 
     def _get_workspace_client(self):
         """Get or create WorkspaceClient (lazy initialization)"""
@@ -76,7 +88,7 @@ class LakebaseOAuthManager:
                 logger.info("LakebaseOAuthManager: Creating WorkspaceClient with OAuth")
                 self._workspace_client = WorkspaceClient(host=self.databricks_host)
             else:
-                # Use PAT token if available
+                # Try PAT token first, then CLI auth
                 token = os.environ.get('DATABRICKS_TOKEN')
                 if token:
                     logger.info("LakebaseOAuthManager: Creating WorkspaceClient with PAT token")
@@ -85,7 +97,9 @@ class LakebaseOAuthManager:
                         token=token
                     )
                 else:
-                    raise ValueError("No OAuth credentials or PAT token available")
+                    # Use CLI auth (databricks auth login / profile config)
+                    logger.info("LakebaseOAuthManager: Creating WorkspaceClient with CLI auth")
+                    self._workspace_client = WorkspaceClient(host=self.databricks_host)
 
         return self._workspace_client
 
@@ -182,9 +196,12 @@ class LakebaseOAuthManager:
             "sslmode": "require"
         }
 
-    def get_database_url(self) -> str:
+    def get_database_url(self, schema: str = None) -> str:
         """
         Get a DATABASE_URL string with fresh token.
+
+        Args:
+            schema: Optional schema name to set as search_path
 
         Returns:
             PostgreSQL connection URL string
@@ -194,10 +211,15 @@ class LakebaseOAuthManager:
         token = self.get_token()
         username = self.get_username()
 
-        return (
-            f"postgresql://{quote_plus(username)}:{quote_plus(token)}"
+        url = (
+            f"postgresql+psycopg://{quote_plus(username)}:{quote_plus(token)}"
             f"@{self.lakebase_host}:5432/databricks_postgres?sslmode=require"
         )
+
+        if schema:
+            url += f"&options=-csearch_path%3D{schema}"
+
+        return url
 
     @property
     def token_expires_in(self) -> Optional[int]:
@@ -216,7 +238,7 @@ def get_lakebase_oauth_manager() -> Optional[LakebaseOAuthManager]:
     """
     Get or create the global LakebaseOAuthManager instance.
 
-    Returns None if OAuth is not configured (falls back to static credentials).
+    Returns None if Lakebase is not configured (falls back to static credentials).
 
     Configuration is read from environment variables:
     - LAKEBASE_INSTANCE: The Lakebase instance name
@@ -224,6 +246,7 @@ def get_lakebase_oauth_manager() -> Optional[LakebaseOAuthManager]:
     - DATABRICKS_HOST: The Databricks workspace URL
     - DATABRICKS_CLIENT_ID: Service principal client ID (for OAuth)
     - DATABRICKS_CLIENT_SECRET: Service principal secret (for OAuth)
+    - DATABRICKS_TOKEN: PAT token (for local development)
     """
     global _oauth_manager
 
@@ -236,15 +259,41 @@ def get_lakebase_oauth_manager() -> Optional[LakebaseOAuthManager]:
                 logger.info("LakebaseOAuthManager: LAKEBASE_INSTANCE or LAKEBASE_HOST not set, OAuth disabled")
                 return None
 
-            # Check if OAuth credentials are available
-            has_oauth = bool(
+            # Check if OAuth credentials are available (Service Principal)
+            has_explicit_oauth = bool(
                 os.environ.get('DATABRICKS_CLIENT_ID') and
                 os.environ.get('DATABRICKS_CLIENT_SECRET')
             )
+            # Client ID alone means Databricks Apps mode (managed identity)
+            has_client_id = bool(os.environ.get('DATABRICKS_CLIENT_ID'))
 
-            if not has_oauth:
-                logger.info("LakebaseOAuthManager: No OAuth credentials, using static DATABASE_URL")
-                return None
+            # Check if PAT token is available (local development)
+            has_pat = bool(os.environ.get('DATABRICKS_TOKEN'))
+
+            # If we have client ID (Databricks Apps) or explicit OAuth, skip CLI auth check
+            if has_explicit_oauth:
+                logger.info("LakebaseOAuthManager: Explicit OAuth credentials available")
+            elif has_client_id:
+                logger.info("LakebaseOAuthManager: Client ID detected (Databricks Apps mode)")
+            elif has_pat:
+                logger.info("LakebaseOAuthManager: PAT token available")
+            else:
+                # Only do CLI auth check if no other method is available
+                has_cli_auth = False
+                try:
+                    from databricks.sdk import WorkspaceClient
+                    # Try to create a client with default auth (uses CLI config)
+                    test_client = WorkspaceClient(host=os.environ.get('DATABRICKS_HOST'))
+                    # Try a simple API call to verify auth works
+                    test_client.current_user.me()
+                    has_cli_auth = True
+                    logger.info("LakebaseOAuthManager: Databricks CLI authentication available")
+                except Exception as e:
+                    logger.debug(f"LakebaseOAuthManager: CLI auth check failed: {e}")
+
+                if not has_cli_auth:
+                    logger.info("LakebaseOAuthManager: No authentication method available, using static DATABASE_URL")
+                    return None
 
             _oauth_manager = LakebaseOAuthManager(
                 lakebase_instance=lakebase_instance,

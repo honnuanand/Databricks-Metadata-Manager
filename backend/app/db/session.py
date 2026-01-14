@@ -50,8 +50,13 @@ def get_engine():
             logger.info("Database engine: Using OAuth token authentication")
             _using_oauth = True
 
+            # Get schema from environment
+            import os
+            schema = os.environ.get('LAKEBASE_SCHEMA', 'metadata_manager')
+            logger.info(f"Database engine: Using schema '{schema}'")
+
             # Get initial URL to create engine (token will be refreshed on connect)
-            database_url = oauth_mgr.get_database_url()
+            database_url = oauth_mgr.get_database_url(schema=schema)
 
             _engine = create_engine(
                 database_url,

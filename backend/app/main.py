@@ -461,24 +461,42 @@ async def health_check():
     from app.db.session import is_using_oauth
     from app.db.lakebase_oauth import get_lakebase_oauth_manager
 
-    # Use effective_database_url which handles both Lakebase and legacy DATABASE_URL
-    effective_url = settings.effective_database_url
-    default_url = "postgresql://user:pass@localhost/dbname"
-
-    # Mask database URL for security (show only host)
+    # Check if OAuth is being used for the database URL
     db_url_info = "not_configured"
-    if effective_url and effective_url != default_url:
-        try:
+    try:
+        oauth_mgr = get_lakebase_oauth_manager()
+        if oauth_mgr:
+            schema = os.environ.get('LAKEBASE_SCHEMA', 'metadata_manager')
+            effective_url = oauth_mgr.get_database_url(schema=schema)
             from urllib.parse import urlparse
             parsed = urlparse(effective_url)
             db_url_info = f"{parsed.scheme}://***:***@{parsed.hostname}/{parsed.path.lstrip('/')}"
-        except:
-            db_url_info = "configured_but_parse_failed"
+        else:
+            effective_url = settings.effective_database_url
+            default_url = "postgresql://user:pass@localhost/dbname"
+            if effective_url and effective_url != default_url:
+                from urllib.parse import urlparse
+                parsed = urlparse(effective_url)
+                db_url_info = f"{parsed.scheme}://***:***@{parsed.hostname}/{parsed.path.lstrip('/')}"
+    except Exception as e:
+        db_url_info = f"error_getting_url: {str(e)}"
+
+    # Get Lakebase env vars for debugging
+    lakebase_env = {
+        "LAKEBASE_INSTANCE": os.environ.get("LAKEBASE_INSTANCE"),
+        "LAKEBASE_HOST": os.environ.get("LAKEBASE_HOST"),
+        "LAKEBASE_SCHEMA": os.environ.get("LAKEBASE_SCHEMA"),
+        "DATABRICKS_HOST": os.environ.get("DATABRICKS_HOST"),
+        "DATABRICKS_CLIENT_ID": "***" if os.environ.get("DATABRICKS_CLIENT_ID") else None,
+        "DATABRICKS_CLIENT_SECRET": "***" if os.environ.get("DATABRICKS_CLIENT_SECRET") else None,
+        "DATABRICKS_TOKEN": "***" if os.environ.get("DATABRICKS_TOKEN") else None,
+    }
 
     # Check OAuth status
     using_oauth = False
     oauth_token_expires_in = None
     oauth_username = None
+    oauth_error = None
     try:
         using_oauth = is_using_oauth()
         if using_oauth:
@@ -487,6 +505,7 @@ async def health_check():
                 oauth_token_expires_in = oauth_mgr.token_expires_in
                 oauth_username = oauth_mgr.get_username()
     except Exception as e:
+        oauth_error = str(e)
         logger.warning(f"Could not get OAuth status: {e}")
 
     health_status = {
@@ -496,10 +515,11 @@ async def health_check():
             "auth_service": "available",
             "database": "unknown"
         },
-        "database_url_configured": bool(effective_url and effective_url != default_url),
+        "database_url_configured": db_url_info != "not_configured",
         "database_url_info": db_url_info,
         "using_lakebase": settings.is_using_lakebase,
         "using_oauth": using_oauth,
+        "lakebase_env": lakebase_env,
     }
 
     # Add OAuth details if using OAuth
@@ -507,10 +527,16 @@ async def health_check():
         health_status["oauth_token_expires_in"] = oauth_token_expires_in
         health_status["oauth_username"] = oauth_username
 
-    # Test database connectivity
+    if oauth_error:
+        health_status["oauth_error"] = oauth_error
+
+    # Test database connectivity using the session engine (which handles OAuth)
     try:
-        from sqlalchemy import create_engine, text
-        engine = create_engine(effective_url, connect_args={"connect_timeout": 5})
+        from sqlalchemy import text
+        from app.db.session import get_engine as get_session_engine
+
+        # Use the session engine which handles OAuth token refresh
+        engine = get_session_engine()
         with engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM users"))
             user_count = result.scalar()

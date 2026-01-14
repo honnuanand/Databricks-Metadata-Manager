@@ -1,0 +1,46 @@
+# Deployment metadata (used by deploy_to_databricks.py, removed before deployment)
+deployment:
+  app_name: "metadata-mgr"
+  profile: "fe-vm-leaps-fe"
+
+command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Allow anonymous access to the app (uses custom JWT authentication)
+# This disables Databricks OAuth for the app - app handles its own auth
+allow_anonymous_access: true
+
+default_source_ip_permissions:
+  - action: ALLOW
+    ip_addresses: ["0.0.0.0/0"]
+
+env:
+  - name: ENV
+    value: "production"
+  - name: PORT
+    value: "8000"
+  - name: DEBUG
+    value: "False"
+
+  # Lakebase Database Configuration (uses OAuth via DATABRICKS_CLIENT_ID)
+  - name: LAKEBASE_INSTANCE
+    value: "arao-lb"
+  - name: LAKEBASE_HOST
+    value: "instance-f2a8b56a-7fe2-4c9c-a0a3-7768594a50e5.database.cloud.databricks.com"
+  - name: LAKEBASE_DATABASE
+    value: "databricks_postgres"
+  - name: LAKEBASE_SCHEMA
+    value: "metadata_manager"
+  - name: LAKEBASE_PORT
+    value: "5432"
+
+  # JWT Secret Key for application authentication
+  - name: SECRET_KEY
+    valueFrom: "metadata-manager-secrets/secret-key"
+
+  # Databricks Configuration for Unity Catalog access
+  - name: DATABRICKS_HOST
+    value: "https://fe-vm-leaps-fe.cloud.databricks.com"
+  - name: DATABRICKS_WAREHOUSE_PATH
+    value: "/sql/1.0/warehouses/2dc6b7aacc451bcd"
+  - name: DATABRICKS_TOKEN
+    valueFrom: "metadata-manager-secrets/databricks-token"

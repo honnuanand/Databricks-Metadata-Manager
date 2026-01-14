@@ -1,13 +1,15 @@
 """
 User Service - Business logic for user management and authentication
 """
+import os
 from typing import List, Optional
 from app.dal.application_data_dal import application_data_dal
 from app.schemas.user import User, UserCreate
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.pool import NullPool
 from passlib.context import CryptContext
 from app.core.config import settings
+from app.db.lakebase_oauth import get_lakebase_oauth_manager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,16 +18,47 @@ logger = logging.getLogger(__name__)
 _engine = None
 
 def get_engine():
-    """Get or create the database engine singleton"""
+    """Get or create the database engine singleton with Lakebase OAuth support"""
     global _engine
     if _engine is None:
         try:
-            _engine = create_engine(
-                settings.DATABASE_URL,
-                poolclass=NullPool,  # Disable connection pooling for serverless
-                connect_args={"connect_timeout": 10}
-            )
-            logger.info("Database engine created successfully")
+            oauth_mgr = get_lakebase_oauth_manager()
+
+            # Get schema from environment
+            schema = os.environ.get('LAKEBASE_SCHEMA', 'metadata_manager')
+
+            if oauth_mgr:
+                # Use Lakebase with OAuth token refresh
+                logger.info(f"Creating database engine with Lakebase OAuth (schema: {schema})")
+                _engine = create_engine(
+                    oauth_mgr.get_database_url(schema=schema),
+                    poolclass=NullPool,  # Each connection gets fresh token
+                    connect_args={"connect_timeout": 10}
+                )
+
+                # Refresh token on each connection
+                @event.listens_for(_engine, "do_connect")
+                def provide_token_on_connect(dialect, conn_rec, cargs, cparams):
+                    fresh_mgr = get_lakebase_oauth_manager()
+                    if fresh_mgr:
+                        params = fresh_mgr.get_connection_params()
+                        cparams['user'] = params['user']
+                        cparams['password'] = params['password']
+                        logger.debug("Refreshed OAuth token for database connection")
+
+                logger.info("Database engine created with Lakebase OAuth")
+            elif settings.DATABASE_URL:
+                # Fall back to static DATABASE_URL
+                logger.info("Creating database engine with static DATABASE_URL")
+                _engine = create_engine(
+                    settings.DATABASE_URL,
+                    poolclass=NullPool,
+                    connect_args={"connect_timeout": 10}
+                )
+                logger.info("Database engine created with static URL")
+            else:
+                raise ValueError("No database configuration available (set LAKEBASE_* or DATABASE_URL)")
+
         except Exception as e:
             logger.error(f"Failed to create database engine: {e}")
             raise

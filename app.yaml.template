@@ -1,0 +1,57 @@
+# Metadata Manager - Databricks App Configuration Template
+# Copy this file to app.yaml and fill in the values for your environment
+#
+# For multiple environments, create:
+#   - app.yaml.dev   (development)
+#   - app.yaml.prod  (production)
+# Then deploy with: python deploy_to_databricks.py --config app.yaml.dev
+
+# Deployment metadata (used by deploy_to_databricks.py, removed before deployment)
+deployment:
+  app_name: "<YOUR_APP_NAME>"           # e.g., "metadata-manager-dev" or "metadata-manager-prod"
+  profile: "<YOUR_DATABRICKS_PROFILE>"  # e.g., "DEFAULT" (from ~/.databrickscfg)
+
+command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Allow anonymous access to the app (uses custom JWT authentication)
+default_source_ip_permissions:
+  - action: ALLOW
+    ip_addresses: ["0.0.0.0/0"]
+
+env:
+  - name: ENV
+    value: "production"
+  - name: PORT
+    value: "8000"
+  - name: DEBUG
+    value: "False"
+
+  # Lakebase Database Configuration
+  - name: LAKEBASE_INSTANCE
+    value: "<YOUR_LAKEBASE_INSTANCE>"     # e.g., "arao-lb"
+  - name: LAKEBASE_HOST
+    value: "<YOUR_LAKEBASE_HOST>"         # e.g., "instance-xxx.database.cloud.databricks.com"
+  - name: LAKEBASE_DATABASE
+    value: "databricks_postgres"
+  - name: LAKEBASE_USER
+    value: "<YOUR_LAKEBASE_USER>"         # e.g., "metadata_manager_app"
+  - name: LAKEBASE_PORT
+    value: "5432"
+  - name: LAKEBASE_PASSWORD
+    valueFrom: "<YOUR_SCOPE>/lakebase-password"  # Secret scope/key
+
+  # Database URL (PostgreSQL connection string)
+  - name: DATABASE_URL
+    valueFrom: "<YOUR_SCOPE>/database-url"  # Secret scope/key
+
+  # JWT Secret Key
+  - name: SECRET_KEY
+    valueFrom: "<YOUR_SCOPE>/secret-key"  # Secret scope/key
+
+  # Databricks Configuration for Unity Catalog access
+  - name: DATABRICKS_HOST
+    value: "<YOUR_DATABRICKS_HOST>"           # e.g., "https://your-workspace.cloud.databricks.com"
+  - name: DATABRICKS_WAREHOUSE_PATH
+    value: "<YOUR_SQL_WAREHOUSE_PATH>"        # e.g., "/sql/1.0/warehouses/abc123"
+  - name: DATABRICKS_TOKEN
+    valueFrom: "<YOUR_SCOPE>/databricks-token"  # Secret scope/key for PAT token

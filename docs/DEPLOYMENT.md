@@ -1,264 +1,404 @@
-# Metadata Manager - Databricks Deployment Guide
+# Databricks Apps Deployment Guide
 
-## Prerequisites
+This guide covers deploying the Metadata Manager to Databricks Apps with Lakebase (PostgreSQL) OAuth authentication.
 
-1. **Databricks CLI** installed and configured
-2. **Databricks Personal Access Token** (PAT) for the app
-3. **Node.js 18+** for building frontend
-4. **Python 3.11+** for backend
+## Architecture Overview
 
-## Secret Scope Setup
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Databricks Workspace                        │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐ │
+│  │  Databricks App │───▶│    Lakebase     │    │   Unity     │ │
+│  │  (FastAPI +     │    │  (PostgreSQL)   │    │  Catalog    │ │
+│  │   React)        │    │                 │    │             │ │
+│  │                 │    │  Schema:        │    │  Metadata   │ │
+│  │  SP: auto-      │    │  metadata_      │    │  Discovery  │ │
+│  │  assigned       │    │  manager        │    │             │ │
+│  └────────┬────────┘    └────────▲────────┘    └──────▲──────┘ │
+│           │                      │                     │        │
+│           │   OAuth Token        │                     │        │
+│           └──────────────────────┘                     │        │
+│                                                        │        │
+│           │   Databricks SDK                           │        │
+│           └────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-A secret scope named `metadata-manager-secrets` should be created with the following secrets:
+## Quick Start
 
-| Secret Key | Description | Required |
-|------------|-------------|----------|
-| `databricks-host` | Workspace URL | ✅ Yes |
-| `databricks-token` | PAT for Unity Catalog API access | ✅ Yes |
-| `database-url` | PostgreSQL connection string (Neon) | ✅ Yes |
-| `secret-key` | JWT signing key | ✅ Yes |
-
-## Setting Up Secrets
-
-### 1. Create Secret Scope
+### Existing Workspace (Redeploy)
 
 ```bash
-# Create the secret scope (if it doesn't exist)
-databricks secrets create-scope metadata-manager-secrets
+python deploy_to_databricks.py --skip-secrets
 ```
 
-### 2. Add Databricks Token
-
-Generate a Personal Access Token (PAT):
-
-1. Go to your Databricks workspace
-2. Click on your user icon (top right) → Settings
-3. Click on "Developer" → "Access tokens"
-4. Click "Generate new token"
-5. Give it a name: `metadata-manager-app`
-6. Set expiration: 90 days recommended
-7. Click "Generate"
-8. **Copy the token immediately**
-
-Add to secret scope:
+### New Workspace (Full Setup)
 
 ```bash
-databricks secrets put-secret metadata-manager-secrets databricks-token --string-value "dapi..."
-databricks secrets put-secret metadata-manager-secrets databricks-host --string-value "https://your-workspace.cloud.databricks.com"
+# 1. Configure CLI profile
+databricks auth login --host https://WORKSPACE.cloud.databricks.com --profile PROFILE_NAME
+
+# 2. Edit app.yaml with your settings (see Configuration section)
+
+# 3. Create secrets
+databricks secrets create-scope --scope metadata-manager-secrets --profile PROFILE_NAME
+databricks secrets put-secret --scope metadata-manager-secrets --key secret-key --profile PROFILE_NAME
+databricks secrets put-secret --scope metadata-manager-secrets --key databricks-token --profile PROFILE_NAME
+
+# 4. Create Lakebase schema
+python scripts/migrate_neon_to_lakebase.py --profile PROFILE_NAME --schema metadata_manager --skip-data
+
+# 5. Deploy app
+python deploy_to_databricks.py --skip-secrets
+
+# 6. Grant SP access to Lakebase
+python scripts/grant_lakebase_sp_access.py --profile PROFILE_NAME --schema metadata_manager
+
+# 7. Redeploy to apply permissions
+python deploy_to_databricks.py --skip-secrets
 ```
 
-### 3. Add Database Connection String
+---
 
-See [NEON_SETUP.md](NEON_SETUP.md) for setting up the PostgreSQL database.
+## Configuration
+
+### `app.yaml` Structure
+
+```yaml
+# Deployment metadata (stripped before upload - used by deploy script only)
+deployment:
+  app_name: "metadata-mgr"           # App name in Databricks
+  profile: "fe-vm-leaps-fe"          # Databricks CLI profile
+
+command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+env:
+  # Lakebase Database (OAuth via auto-injected DATABRICKS_CLIENT_ID)
+  - name: LAKEBASE_INSTANCE
+    value: "arao-lb"                 # Your Lakebase instance name
+  - name: LAKEBASE_HOST
+    value: "instance-xxx.database.cloud.databricks.com"  # Lakebase hostname
+  - name: LAKEBASE_SCHEMA
+    value: "metadata_manager"        # PostgreSQL schema
+
+  # Databricks Workspace
+  - name: DATABRICKS_HOST
+    value: "https://workspace.cloud.databricks.com"
+  - name: DATABRICKS_WAREHOUSE_PATH
+    value: "/sql/1.0/warehouses/abc123"
+
+  # Secrets (from Databricks Secret Scope)
+  - name: SECRET_KEY
+    valueFrom: "metadata-manager-secrets/secret-key"
+  - name: DATABRICKS_TOKEN
+    valueFrom: "metadata-manager-secrets/databricks-token"
+```
+
+### Values to Update for New Workspace
+
+| Variable | Where to Find | Example |
+|----------|---------------|---------|
+| `deployment.profile` | Your CLI profile name | `my-workspace` |
+| `deployment.app_name` | Choose unique name | `metadata-mgr` |
+| `LAKEBASE_INSTANCE` | Lakebase UI > Instance name | `my-lakebase` |
+| `LAKEBASE_HOST` | Lakebase UI > Connection info | `instance-xxx.database.cloud.databricks.com` |
+| `LAKEBASE_SCHEMA` | Choose schema name | `metadata_manager` |
+| `DATABRICKS_HOST` | Workspace URL | `https://my-workspace.cloud.databricks.com` |
+| `DATABRICKS_WAREHOUSE_PATH` | SQL Warehouse > Connection details | `/sql/1.0/warehouses/abc123` |
+
+---
+
+## Deploy Script
+
+### Usage
 
 ```bash
-databricks secrets put-secret metadata-manager-secrets database-url --string-value "postgresql://user:pass@host/db?sslmode=require"
+# Basic deployment (uses app.yaml settings)
+python deploy_to_databricks.py --skip-secrets
+
+# Override settings
+python deploy_to_databricks.py --app-name my-app --profile my-profile --skip-secrets
+
+# Use different config file
+python deploy_to_databricks.py --config app.yaml.prod --skip-secrets
+
+# Hard redeploy (delete and recreate)
+python deploy_to_databricks.py --hard-redeploy --skip-secrets
 ```
 
-### 4. Add JWT Secret Key
+### What It Does
+
+1. **Reads config** from `app.yaml` (app_name, profile from `deployment:` section)
+2. **Builds frontend** (`npm run build` in `front-end/`)
+3. **Copies static files** to `backend/static/`
+4. **Packages backend** (excludes venv, tests, cache)
+5. **Strips deployment metadata** from app.yaml before upload
+6. **Imports to workspace** (`/Workspace/Users/{email}/{app_name}`)
+7. **Deploys app** via `databricks apps deploy`
+
+### Configuration Priority
+
+1. CLI arguments (`--app-name`, `--profile`)
+2. Environment variable (`DATABRICKS_APP_NAME`)
+3. `app.yaml` deployment section
+
+---
+
+## Lakebase OAuth Authentication
+
+### How It Works
+
+Databricks Apps automatically inject these environment variables:
+- `DATABRICKS_CLIENT_ID` - Service Principal client ID
+- `DATABRICKS_CLIENT_SECRET` - Service Principal secret
+
+The app uses these to:
+1. Generate OAuth tokens via `WorkspaceClient().database.generate_database_credential()`
+2. Connect to Lakebase using SP client_id as username and OAuth token as password
+3. Auto-refresh tokens before expiry (5 minute buffer)
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `backend/app/db/lakebase_oauth.py` | OAuth token manager |
+| `backend/app/db/session.py` | Database session with OAuth support |
+| `backend/requirements.txt` | Uses `psycopg[binary]` (psycopg3) |
+
+### Verify OAuth is Working
 
 ```bash
-# Generate a secure random key
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+# Get OAuth token for API access
+TOKEN=$(databricks auth token --profile PROFILE --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-# Add to secrets
-databricks secrets put-secret metadata-manager-secrets secret-key --string-value "your-generated-key"
+# Check health endpoint
+curl -H "Authorization: Bearer $TOKEN" https://APP_URL/health
 ```
 
-## Verify Secrets
+Expected response:
+```json
+{
+  "status": "healthy",
+  "using_oauth": true,
+  "oauth_token_expires_in": 3599,
+  "oauth_username": "38cfcbb5-54b4-49a5-8f5f-38535d127178",
+  "database_user_count": 3
+}
+```
+
+---
+
+## Granting Lakebase Access to Service Principal
+
+After deploying, the app's Service Principal needs PostgreSQL permissions.
+
+### Using the Script
 
 ```bash
-# List all secrets in the scope
-databricks secrets list-secrets metadata-manager-secrets
+python scripts/grant_lakebase_sp_access.py \
+  --profile PROFILE_NAME \
+  --app-name metadata-mgr \
+  --schema metadata_manager
 ```
 
-## Deploy the Application
+### What It Does
 
-### One-Command Deployment
+1. Gets SP info from the Databricks App
+2. Creates PostgreSQL role with SP client_id as name
+3. Sets security label for OAuth: `SECURITY LABEL FOR databricks_auth ON ROLE "uuid" IS 'id=SP_ID,type=SERVICE_PRINCIPAL'`
+4. Grants permissions: USAGE, SELECT, INSERT, UPDATE, DELETE on schema
 
-The deployment script handles everything automatically:
+### Manual SQL (if needed)
+
+```sql
+-- Replace with your SP's client_id and numeric SP ID
+-- Get these from: databricks apps get APP_NAME --output json
+
+-- 1. Create role
+CREATE ROLE "38cfcbb5-54b4-49a5-8f5f-38535d127178" WITH LOGIN NOINHERIT;
+
+-- 2. Set security label (CRITICAL for OAuth)
+SECURITY LABEL FOR databricks_auth ON ROLE "38cfcbb5-54b4-49a5-8f5f-38535d127178"
+  IS 'id=78440603301853,type=SERVICE_PRINCIPAL';
+
+-- 3. Grant permissions
+GRANT USAGE ON SCHEMA metadata_manager TO "38cfcbb5-54b4-49a5-8f5f-38535d127178";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA metadata_manager
+  TO "38cfcbb5-54b4-49a5-8f5f-38535d127178";
+ALTER DEFAULT PRIVILEGES IN SCHEMA metadata_manager
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "38cfcbb5-54b4-49a5-8f5f-38535d127178";
+```
+
+---
+
+## Creating Lakebase Schema
+
+### Using Migration Script
 
 ```bash
-# From the project root directory
-python deploy_to_databricks.py
+# Create schema and tables (no data)
+python scripts/migrate_neon_to_lakebase.py --profile PROFILE --schema metadata_manager --skip-data
+
+# Or with data migration from Neon
+python scripts/migrate_neon_to_lakebase.py --profile PROFILE --schema metadata_manager
 ```
 
-The script will:
-1. ✅ Build the React frontend (`npm run build`)
-2. ✅ Copy static files to backend/static
-3. ✅ Package the backend code
-4. ✅ Upload to Databricks workspace
-5. ✅ Create/update Databricks App with secrets
+### Tables Created
 
-### Deployment Options
+| Table | Purpose |
+|-------|---------|
+| `users` | User accounts with hashed passwords |
+| `comments` | Comment suggestions |
+| `approvals` | Approval workflow records |
+| `audit_logs` | Audit trail |
+| `alembic_version` | Migration tracking |
+
+### Default Test Users
+
+| Username | Password | Role |
+|----------|----------|------|
+| admin | admin123 | admin |
+| approver | approver123 | approver |
+| testuser | user123 | suggest_only |
+
+---
+
+## Secrets Setup
+
+### Required Secrets
+
+| Secret Key | Description |
+|------------|-------------|
+| `secret-key` | JWT signing key for app authentication |
+| `databricks-token` | PAT token for Unity Catalog access |
+
+### Create Secrets
 
 ```bash
-# Regular deployment (creates or updates app)
-python deploy_to_databricks.py
+# Create scope
+databricks secrets create-scope --scope metadata-manager-secrets --profile PROFILE
 
-# Hard redeploy (delete and recreate app)
-python deploy_to_databricks.py --hard-redeploy
+# Add JWT secret (generate random)
+databricks secrets put-secret --scope metadata-manager-secrets --key secret-key \
+  --string-value "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  --profile PROFILE
 
-# Custom workspace path
-python deploy_to_databricks.py --workspace-path /Workspace/Users/your-email@domain.com/metadata-manager
+# Add Databricks token
+databricks secrets put-secret --scope metadata-manager-secrets --key databricks-token \
+  --string-value "dapi..." --profile PROFILE
 ```
 
-### What Gets Deployed
+### Verify Secrets
 
-**Backend:**
-- FastAPI application
-- SQLAlchemy models and migrations
-- Databricks Unity Catalog integration
-- Authentication and authorization logic
-
-**Frontend:**
-- React application (built and served as static files)
-- Material-UI components
-- Redux state management
-- In-app test runner
-
-**Configuration:**
-All secrets are injected from Databricks secrets scope:
-- `DATABRICKS_HOST`: Workspace URL
-- `DATABRICKS_TOKEN`: Unity Catalog API access
-- `DATABASE_URL`: PostgreSQL connection
-- `SECRET_KEY`: JWT signing key
-
-## Post-Deployment
-
-### Access the Application
-
-After successful deployment:
-
-1. The deployment script will output the app URL
-2. Or navigate to: Workspace → Apps → metadata-manager
-3. Click to open the application
-
-**Example URL:**
-```
-https://metadata-manager-{app-id}.{region}.databricksapps.com
+```bash
+databricks secrets list-secrets --scope metadata-manager-secrets --profile PROFILE
 ```
 
-### Initial Setup
-
-1. **Initialize Databricks Schema:**
-   ```bash
-   export DATABRICKS_TOKEN="your-token"
-   export DATABRICKS_HOST="https://your-workspace.cloud.databricks.com"
-   python databricks/create_schema_sql.py
-   ```
-
-2. **Login with Test User:**
-   - Email: `admin@example.com`
-   - Password: `admin123`
-
-3. **Verify Functionality:**
-   - Browse catalogs
-   - Create test comment suggestion
-   - Run in-app tests at `/test-runner`
+---
 
 ## Troubleshooting
 
-### Secrets Not Found
+### "permission denied for table users"
+
+**Cause**: SP doesn't have Lakebase permissions.
+
+**Fix**: Run the grant script and redeploy:
+```bash
+python scripts/grant_lakebase_sp_access.py --profile PROFILE --schema metadata_manager
+python deploy_to_databricks.py --skip-secrets
+```
+
+### "No module named 'psycopg'"
+
+**Cause**: Wrong PostgreSQL driver.
+
+**Fix**: Ensure `requirements.txt` has:
+```
+psycopg[binary]==3.2.3
+```
+(Not `psycopg2-binary`)
+
+### "using_oauth: false" in health check
+
+**Cause**: `DATABRICKS_CLIENT_ID` not detected.
+
+**Check**:
+1. App is running in Databricks Apps (not locally)
+2. `LAKEBASE_INSTANCE` and `LAKEBASE_HOST` are set in app.yaml
+
+### "connection to localhost refused"
+
+**Cause**: Schema not set in database URL.
+
+**Fix**: Ensure `session.py` passes schema to `get_database_url()`:
+```python
+database_url = oauth_mgr.get_database_url(schema=os.environ.get('LAKEBASE_SCHEMA'))
+```
+
+### App stuck in ERROR state
+
+**Cause**: Often SP conflicts or resource issues.
+
+**Fix**: Hard redeploy:
+```bash
+python deploy_to_databricks.py --hard-redeploy --skip-secrets
+```
+
+---
+
+## Multi-Environment Setup
+
+### Create Environment-Specific Configs
 
 ```bash
-# List available scopes
-databricks secrets list-scopes
+# Development
+cp app.yaml app.yaml.dev
 
-# List secrets in scope
-databricks secrets list-secrets metadata-manager-secrets
-
-# Get specific secret (returns metadata only, not value)
-databricks secrets get-secret metadata-manager-secrets database-url
+# Production
+cp app.yaml app.yaml.prod
 ```
 
-### Deployment Fails
+### Deploy to Different Environments
 
 ```bash
-# Check if app exists
-databricks apps list
+# Deploy to dev
+python deploy_to_databricks.py --config app.yaml.dev --skip-secrets
 
-# Get app details and status
-databricks apps get metadata-manager
-
-# Delete and redeploy
-python deploy_to_databricks.py --hard-redeploy
+# Deploy to prod
+python deploy_to_databricks.py --config app.yaml.prod --skip-secrets
 ```
 
-### Frontend Build Fails
+### Example: `app.yaml.prod`
 
-```bash
-# Install dependencies
-cd front-end
-npm install
+```yaml
+deployment:
+  app_name: "metadata-mgr-prod"
+  profile: "prod-workspace"
 
-# Build manually
-npm run build
+command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
-# Check for build errors
-ls -la dist/
+env:
+  - name: LAKEBASE_INSTANCE
+    value: "prod-lakebase"
+  - name: LAKEBASE_HOST
+    value: "instance-prod.database.cloud.databricks.com"
+  - name: LAKEBASE_SCHEMA
+    value: "metadata_manager"
+  - name: DATABRICKS_HOST
+    value: "https://prod-workspace.cloud.databricks.com"
+  # ... etc
 ```
 
-### App Returns 502 Error
+---
 
-Common causes:
-1. Backend startup error (check logs)
-2. Missing environment variables (check secrets)
-3. Database connection failure (verify DATABASE_URL)
+## File Reference
 
-```bash
-# View app logs
-databricks apps logs metadata-manager
-
-# Check app events
-databricks apps events metadata-manager
-```
-
-### Database Connection Issues
-
-```bash
-# Test database connection locally
-export DATABASE_URL="postgresql://..."
-cd backend
-./venv/bin/python -c "
-from sqlalchemy import create_engine, text
-engine = create_engine('$DATABASE_URL')
-with engine.connect() as conn:
-    result = conn.execute(text('SELECT COUNT(*) FROM users'))
-    print(f'Users: {result.scalar()}')
-"
-```
-
-## Monitoring
-
-### Check Application Health
-
-```bash
-# Health endpoint (requires Databricks authentication)
-curl https://your-app-url/health
-
-# API info
-curl https://your-app-url/api/info
-```
-
-### View Application Metrics
-
-```sql
--- In Databricks SQL
-SELECT * FROM arao.metadata_manager.v_user_activity;
-SELECT * FROM arao.metadata_manager.audit_logs ORDER BY created_at DESC LIMIT 100;
-SELECT status, COUNT(*) FROM arao.metadata_manager.comment_suggestions GROUP BY status;
-```
-
-## Updating the Application
-
-To deploy changes:
-
-```bash
-# Make your code changes, then deploy
-python deploy_to_databricks.py
-
-# The app will automatically restart with new code
-```
-
-No need for `--hard-redeploy` unless you want to completely recreate the app.
+| File | Purpose |
+|------|---------|
+| `app.yaml` | Main deployment configuration |
+| `deploy_to_databricks.py` | Deployment script |
+| `backend/app/db/lakebase_oauth.py` | OAuth token manager |
+| `backend/app/db/session.py` | Database session factory |
+| `backend/requirements.txt` | Python dependencies |
+| `scripts/grant_lakebase_sp_access.py` | Grant SP permissions |
+| `scripts/migrate_neon_to_lakebase.py` | Schema/data migration |

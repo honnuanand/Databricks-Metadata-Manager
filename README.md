@@ -396,41 +396,95 @@ alembic upgrade head
 
 ### Deploying to Databricks
 
-#### Option 1: Unified Installer (Recommended for New Deployments)
-
-For a complete fresh installation on a new Databricks workspace:
+#### Quick Deploy (Existing Workspace)
 
 ```bash
-python install.py
+# Deploy using settings from app.yaml
+python deploy_to_databricks.py --skip-secrets
 ```
 
-This handles everything: secrets, schemas, database setup, and deployment.
+#### Deploy to a New Workspace
 
-#### Option 2: Deploy Script (For Updates/Redeployments)
+**Step 1: Configure Databricks CLI**
+```bash
+databricks auth login --host https://NEW-WORKSPACE.cloud.databricks.com --profile NEW_PROFILE
+```
 
-For updating an existing deployment:
+**Step 2: Create Secret Scope**
+```bash
+databricks secrets create-scope --scope metadata-manager-secrets --profile NEW_PROFILE
+databricks secrets put-secret --scope metadata-manager-secrets --key secret-key --string-value "YOUR_JWT_SECRET" --profile NEW_PROFILE
+databricks secrets put-secret --scope metadata-manager-secrets --key databricks-token --string-value "YOUR_PAT_TOKEN" --profile NEW_PROFILE
+```
+
+**Step 3: Update `app.yaml`**
+
+Edit `app.yaml` with your workspace settings (see table below for values to change).
+
+**Step 4: Create Lakebase Schema**
+```bash
+python scripts/migrate_neon_to_lakebase.py --profile NEW_PROFILE --schema metadata_manager --skip-data
+```
+
+**Step 5: Deploy**
+```bash
+python deploy_to_databricks.py --skip-secrets
+```
+
+**Step 6: Grant SP Access to Lakebase**
+```bash
+python scripts/grant_lakebase_sp_access.py --profile NEW_PROFILE --schema metadata_manager
+```
+
+**Step 7: Redeploy to Pick Up Permissions**
+```bash
+python deploy_to_databricks.py --skip-secrets
+```
+
+#### Configuration: `app.yaml`
+
+All deployment settings are in `app.yaml`. Here's what to update for a new workspace:
+
+| Line | Variable | Example Value | Description |
+|------|----------|---------------|-------------|
+| 3 | `deployment.app_name` | `metadata-mgr` | App name in Databricks |
+| 4 | `deployment.profile` | `fe-vm-leaps-fe` | Databricks CLI profile |
+| 26 | `LAKEBASE_INSTANCE` | `arao-lb` | Your Lakebase instance name |
+| 28 | `LAKEBASE_HOST` | `instance-xxx.database...` | Lakebase hostname (from UI) |
+| 32 | `LAKEBASE_SCHEMA` | `metadata_manager` | PostgreSQL schema name |
+| 42 | `DATABRICKS_HOST` | `https://workspace.cloud...` | Workspace URL |
+| 44 | `DATABRICKS_WAREHOUSE_PATH` | `/sql/1.0/warehouses/xxx` | SQL warehouse HTTP path |
+
+**Secret scope names** (lines 38, 46) only need updating if you use a different scope name than `metadata-manager-secrets`.
+
+#### Deploy Script Options
 
 ```bash
-# Basic deployment
+# Deploy using app.yaml defaults
 python deploy_to_databricks.py --skip-secrets
+
+# Override app name or profile
+python deploy_to_databricks.py --app-name my-app --profile my-profile --skip-secrets
+
+# Use different config file
+python deploy_to_databricks.py --config app.yaml.prod --skip-secrets
 
 # Hard redeploy (delete and recreate app)
 python deploy_to_databricks.py --hard-redeploy --skip-secrets
-
-# Use custom secret scope
-python deploy_to_databricks.py --secret-scope my-custom-scope
-
-# Custom app name
-python deploy_to_databricks.py --app-name my-metadata-manager
 ```
 
-The deployment script will:
-1. Build the React frontend
-2. Copy static files to backend
-3. Package and upload to Databricks workspace
-4. Deploy as a Databricks App
+The deployment script:
+1. Reads `app_name` and `profile` from `app.yaml`'s `deployment:` section
+2. Builds React frontend and copies to `backend/static`
+3. Strips `deployment:` metadata before uploading
+4. Deploys to Databricks Apps
 
-See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for detailed instructions.
+See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the complete deployment guide including:
+- New workspace setup (step-by-step)
+- Lakebase OAuth authentication
+- Granting SP permissions
+- Multi-environment configuration
+- Troubleshooting common issues
 
 #### Post-Deployment: Service Principal Permissions
 
