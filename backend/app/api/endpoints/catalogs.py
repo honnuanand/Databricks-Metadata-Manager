@@ -54,7 +54,7 @@ async def debug_databricks_config():
             },
             "service_principal": {
                 "current_user_sql": current_user,
-                "instructions": "Use this value in GRANT statements: GRANT USE CATALOG ON CATALOG arao TO `<current_user_sql>`"
+                "instructions": f"Use this value in GRANT statements: GRANT USE CATALOG ON CATALOG {settings.DATABRICKS_CATALOG} TO `<current_user_sql>`"
             }
         }
     except Exception as e:
@@ -165,11 +165,11 @@ async def list_schemas(
         logger.info(f"   User: {current_user.username} (ID: {current_user.user_id})")
         logger.info(f"   Search filter: {search or 'None'}")
 
-        # Check if this is the arao catalog
-        if catalog_name == "arao":
-            logger.info(f"   ✅ Accessing ARAO catalog - expecting metadata_manager and metadata_test schemas")
+        # Check if this is the configured catalog
+        if catalog_name == settings.DATABRICKS_CATALOG:
+            logger.info(f"   ✅ Accessing configured catalog '{catalog_name}' - expecting {settings.DATABRICKS_SCHEMA} schema")
         else:
-            logger.info(f"   ⚠️  Accessing catalog '{catalog_name}' (not arao)")
+            logger.info(f"   ⚠️  Accessing catalog '{catalog_name}' (not {settings.DATABRICKS_CATALOG})")
 
         logger.info(f"   Calling catalog_service.list_schemas_in_catalog('{catalog_name}')...")
         schemas = await catalog_service.list_schemas_in_catalog(catalog_name, current_user.user_id)
@@ -216,12 +216,9 @@ async def list_tables(
         logger.info(f"   Table type filter: {table_type or 'None'}")
 
         # Check if this is one of our target schemas
-        if catalog_name == "arao" and schema_name in ["metadata_manager", "metadata_test"]:
+        if catalog_name == settings.DATABRICKS_CATALOG and schema_name == settings.DATABRICKS_SCHEMA:
             logger.info(f"   🎯 Accessing target schema: {catalog_name}.{schema_name}")
-            if schema_name == "metadata_manager":
-                logger.info(f"      Expected tables: users, comment_suggestions, approvals, audit_logs")
-            elif schema_name == "metadata_test":
-                logger.info(f"      Expected tables: users, products, orders, order_items, employees, etc.")
+            logger.info(f"      Expected tables: users, comment_suggestions, approvals, audit_logs")
         else:
             logger.info(f"   ℹ️  Accessing schema: {catalog_name}.{schema_name}")
 

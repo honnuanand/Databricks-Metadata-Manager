@@ -44,3 +44,9 @@ env:
     value: "/sql/1.0/warehouses/2dc6b7aacc451bcd"
   - name: DATABRICKS_TOKEN
     valueFrom: "metadata-manager-secrets/databricks-token"
+
+  # Unity Catalog Configuration
+  - name: DATABRICKS_CATALOG
+    value: "arao"
+  - name: DATABRICKS_SCHEMA
+    value: "metadata_manager"

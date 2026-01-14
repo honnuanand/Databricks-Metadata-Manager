@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     DATABRICKS_CLIENT_SECRET: Optional[str] = None  # Used by Databricks Apps for OAuth
     DATABRICKS_WAREHOUSE_PATH: Optional[str] = None  # SQL warehouse HTTP path
 
+    # Unity Catalog Configuration
+    DATABRICKS_CATALOG: str = "arao"  # Default catalog for metadata browsing
+    DATABRICKS_SCHEMA: str = "metadata_manager"  # Default schema for app data
+
     # Email (optional)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: Optional[int] = 587

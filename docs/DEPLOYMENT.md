@@ -45,18 +45,35 @@ databricks secrets create-scope --scope metadata-manager-secrets --profile PROFI
 databricks secrets put-secret --scope metadata-manager-secrets --key secret-key --profile PROFILE_NAME
 databricks secrets put-secret --scope metadata-manager-secrets --key databricks-token --profile PROFILE_NAME
 
-# 4. Create Lakebase schema
-python scripts/migrate_neon_to_lakebase.py --profile PROFILE_NAME --schema metadata_manager --skip-data
+# 4. Setup Lakebase schema (creates schema, tables, default users)
+python scripts/setup_lakebase_schema.py --profile PROFILE_NAME --schema metadata_manager
 
 # 5. Deploy app
 python deploy_to_databricks.py --skip-secrets
 
-# 6. Grant SP access to Lakebase
+# 6. Grant SP access to Lakebase (requires app to exist first)
 python scripts/grant_lakebase_sp_access.py --profile PROFILE_NAME --schema metadata_manager
 
 # 7. Redeploy to apply permissions
 python deploy_to_databricks.py --skip-secrets
 ```
+
+### One-Command Setup (After App Exists)
+
+If the app already exists, you can setup schema and grant SP in one command:
+
+```bash
+python scripts/setup_lakebase_schema.py \
+  --profile PROFILE_NAME \
+  --schema metadata_manager \
+  --app-name metadata-mgr
+```
+
+This will:
+1. Create the schema if it doesn't exist
+2. Create all tables and enum types
+3. Create default test users (admin, approver, testuser)
+4. Grant SP access to the schema
 
 ---
 
@@ -92,6 +109,12 @@ env:
     valueFrom: "metadata-manager-secrets/secret-key"
   - name: DATABRICKS_TOKEN
     valueFrom: "metadata-manager-secrets/databricks-token"
+
+  # Unity Catalog Configuration
+  - name: DATABRICKS_CATALOG
+    value: "arao"                    # Catalog for metadata browsing
+  - name: DATABRICKS_SCHEMA
+    value: "metadata_manager"        # Schema for app data
 ```
 
 ### Values to Update for New Workspace
@@ -105,6 +128,8 @@ env:
 | `LAKEBASE_SCHEMA` | Choose schema name | `metadata_manager` |
 | `DATABRICKS_HOST` | Workspace URL | `https://my-workspace.cloud.databricks.com` |
 | `DATABRICKS_WAREHOUSE_PATH` | SQL Warehouse > Connection details | `/sql/1.0/warehouses/abc123` |
+| `DATABRICKS_CATALOG` | Unity Catalog name to browse | `my_catalog` |
+| `DATABRICKS_SCHEMA` | Schema for app data tables | `metadata_manager` |
 
 ---
 
@@ -233,7 +258,23 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA metadata_manager
 
 ## Creating Lakebase Schema
 
-### Using Migration Script
+### Using Setup Script (Recommended)
+
+```bash
+# Create schema, tables, and default users
+python scripts/setup_lakebase_schema.py --profile PROFILE --schema metadata_manager
+
+# With SP grants (if app exists)
+python scripts/setup_lakebase_schema.py --profile PROFILE --schema metadata_manager --app-name metadata-mgr
+
+# Schema only (no default users)
+python scripts/setup_lakebase_schema.py --profile PROFILE --schema metadata_manager --skip-users
+
+# Dry run (see what would be done)
+python scripts/setup_lakebase_schema.py --profile PROFILE --schema metadata_manager --dry-run
+```
+
+### Using Migration Script (From Neon)
 
 ```bash
 # Create schema and tables (no data)
@@ -400,5 +441,6 @@ env:
 | `backend/app/db/lakebase_oauth.py` | OAuth token manager |
 | `backend/app/db/session.py` | Database session factory |
 | `backend/requirements.txt` | Python dependencies |
-| `scripts/grant_lakebase_sp_access.py` | Grant SP permissions |
-| `scripts/migrate_neon_to_lakebase.py` | Schema/data migration |
+| `scripts/setup_lakebase_schema.py` | Schema setup + SP grants (one-stop) |
+| `scripts/grant_lakebase_sp_access.py` | Grant SP permissions only |
+| `scripts/migrate_neon_to_lakebase.py` | Migrate data from Neon |

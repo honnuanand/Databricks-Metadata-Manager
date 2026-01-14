@@ -33,9 +33,9 @@ class DatabricksConfig:
         if not self.access_token and not self.has_oauth:
             raise ValueError("DATABRICKS_TOKEN environment variable must be set (or run in Databricks Apps with OAuth)")
 
-        # Catalog and schema - can be made configurable if needed
-        self.catalog = "arao"
-        self.schema = "metadata_manager"
+        # Catalog and schema - configurable via environment variables
+        self.catalog = settings.DATABRICKS_CATALOG
+        self.schema = settings.DATABRICKS_SCHEMA
 
         logger.info(f"DatabricksConfig: server_hostname = {self.server_hostname}")
         if self.has_oauth:
