@@ -6,7 +6,61 @@ A comprehensive web application for collaborative metadata management in Databri
 
 **Status**: ✅ All 21/21 tests passing
 
-## 🚀 Features
+---
+
+## 🚀 Deploying to Databricks Apps
+
+> **Deploy** = Production deployment to Databricks Apps with Lakebase OAuth
+
+### Quick Deploy (Existing Workspace)
+
+```bash
+python deploy_to_databricks.py --skip-secrets
+```
+
+### New Workspace Setup
+
+```bash
+# 1. Configure CLI profile
+databricks auth login --host https://WORKSPACE.cloud.databricks.com --profile PROFILE_NAME
+
+# 2. Edit app.yaml with your workspace settings
+
+# 3. Create secrets
+databricks secrets create-scope --scope metadata-manager-secrets --profile PROFILE_NAME
+databricks secrets put-secret --scope metadata-manager-secrets --key secret-key --profile PROFILE_NAME
+databricks secrets put-secret --scope metadata-manager-secrets --key databricks-token --profile PROFILE_NAME
+
+# 4. Setup Lakebase schema (creates schema, tables, default users)
+python scripts/setup_lakebase_schema.py --profile PROFILE_NAME --schema metadata_manager
+
+# 5. Deploy app
+python deploy_to_databricks.py --skip-secrets
+
+# 6. Grant SP access to Lakebase
+python scripts/grant_lakebase_sp_access.py --profile PROFILE_NAME --schema metadata_manager
+
+# 7. Redeploy to apply permissions
+python deploy_to_databricks.py --skip-secrets
+```
+
+### Configuration (`app.yaml`)
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `deployment.app_name` | `metadata-mgr` | App name in Databricks |
+| `deployment.profile` | `fe-vm-leaps-fe` | Databricks CLI profile |
+| `LAKEBASE_INSTANCE` | `arao-lb` | Lakebase instance name |
+| `LAKEBASE_HOST` | `instance-xxx.database...` | Lakebase hostname |
+| `LAKEBASE_SCHEMA` | `metadata_manager` | PostgreSQL schema |
+| `DATABRICKS_HOST` | `https://workspace...` | Workspace URL |
+| `DATABRICKS_CATALOG` | `arao` | Unity Catalog for browsing |
+
+📖 **Full deployment guide**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+
+---
+
+## ✨ Features
 
 ### Core Functionality
 - **Catalog Discovery**: Browse Databricks catalogs, schemas, tables, and columns
@@ -34,9 +88,11 @@ A comprehensive web application for collaborative metadata management in Databri
 - Databricks workspace with appropriate permissions
 - PostgreSQL database (or use Docker)
 
-## 🛠️ Installation
+## 🛠️ Local Development Setup
 
-### Unified Installer (Recommended)
+> **Install** = Setting up for local development and testing
+
+### Unified Installer (For New Databricks Workspace)
 
 The unified installer handles complete platform installation on a new Databricks workspace with a single command:
 
@@ -394,99 +450,7 @@ alembic revision --autogenerate -m "Description"
 alembic upgrade head
 ```
 
-### Deploying to Databricks
-
-#### Quick Deploy (Existing Workspace)
-
-```bash
-# Deploy using settings from app.yaml
-python deploy_to_databricks.py --skip-secrets
-```
-
-#### Deploy to a New Workspace
-
-**Step 1: Configure Databricks CLI**
-```bash
-databricks auth login --host https://NEW-WORKSPACE.cloud.databricks.com --profile NEW_PROFILE
-```
-
-**Step 2: Create Secret Scope**
-```bash
-databricks secrets create-scope --scope metadata-manager-secrets --profile NEW_PROFILE
-databricks secrets put-secret --scope metadata-manager-secrets --key secret-key --string-value "YOUR_JWT_SECRET" --profile NEW_PROFILE
-databricks secrets put-secret --scope metadata-manager-secrets --key databricks-token --string-value "YOUR_PAT_TOKEN" --profile NEW_PROFILE
-```
-
-**Step 3: Update `app.yaml`**
-
-Edit `app.yaml` with your workspace settings (see table below for values to change).
-
-**Step 4: Create Lakebase Schema**
-```bash
-python scripts/migrate_neon_to_lakebase.py --profile NEW_PROFILE --schema metadata_manager --skip-data
-```
-
-**Step 5: Deploy**
-```bash
-python deploy_to_databricks.py --skip-secrets
-```
-
-**Step 6: Grant SP Access to Lakebase**
-```bash
-python scripts/grant_lakebase_sp_access.py --profile NEW_PROFILE --schema metadata_manager
-```
-
-**Step 7: Redeploy to Pick Up Permissions**
-```bash
-python deploy_to_databricks.py --skip-secrets
-```
-
-#### Configuration: `app.yaml`
-
-All deployment settings are in `app.yaml`. Here's what to update for a new workspace:
-
-| Line | Variable | Example Value | Description |
-|------|----------|---------------|-------------|
-| 3 | `deployment.app_name` | `metadata-mgr` | App name in Databricks |
-| 4 | `deployment.profile` | `fe-vm-leaps-fe` | Databricks CLI profile |
-| 26 | `LAKEBASE_INSTANCE` | `arao-lb` | Your Lakebase instance name |
-| 28 | `LAKEBASE_HOST` | `instance-xxx.database...` | Lakebase hostname (from UI) |
-| 32 | `LAKEBASE_SCHEMA` | `metadata_manager` | PostgreSQL schema name |
-| 42 | `DATABRICKS_HOST` | `https://workspace.cloud...` | Workspace URL |
-| 44 | `DATABRICKS_WAREHOUSE_PATH` | `/sql/1.0/warehouses/xxx` | SQL warehouse HTTP path |
-
-**Secret scope names** (lines 38, 46) only need updating if you use a different scope name than `metadata-manager-secrets`.
-
-#### Deploy Script Options
-
-```bash
-# Deploy using app.yaml defaults
-python deploy_to_databricks.py --skip-secrets
-
-# Override app name or profile
-python deploy_to_databricks.py --app-name my-app --profile my-profile --skip-secrets
-
-# Use different config file
-python deploy_to_databricks.py --config app.yaml.prod --skip-secrets
-
-# Hard redeploy (delete and recreate app)
-python deploy_to_databricks.py --hard-redeploy --skip-secrets
-```
-
-The deployment script:
-1. Reads `app_name` and `profile` from `app.yaml`'s `deployment:` section
-2. Builds React frontend and copies to `backend/static`
-3. Strips `deployment:` metadata before uploading
-4. Deploys to Databricks Apps
-
-See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** for the complete deployment guide including:
-- New workspace setup (step-by-step)
-- Lakebase OAuth authentication
-- Granting SP permissions
-- Multi-environment configuration
-- Troubleshooting common issues
-
-#### Post-Deployment: Service Principal Permissions
+### Post-Deployment: Service Principal Permissions
 
 After deploying the app, you need to grant Unity Catalog permissions to the service principal that runs the app. The service principal name is automatically assigned by Databricks and can be discovered by:
 
